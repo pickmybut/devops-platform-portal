@@ -1,0 +1,40 @@
+stages:
+  - Test
+  - Build
+
+variables:
+  PYTHON_IMAGE: python:3.14-slim
+  IMAGE_TAG:    $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+
+Lint:
+  stage: Test
+  image: $PYTHON_IMAGE
+  script:
+    - pip install ruff
+    - ruff check .
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+Unit Tests:
+  stage: Test
+  image: $PYTHON_IMAGE
+  script:
+    - pip install -r requirements.txt pytest pytest-asyncio httpx
+    - pytest tests/ -v --tb=short
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+Build Docker Image:
+  stage: Build
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $IMAGE_TAG .
+    - docker push $IMAGE_TAG
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

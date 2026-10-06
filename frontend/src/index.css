@@ -1,0 +1,9 @@
+@import 'tailwindcss';
+
+/* Smooth spin for the loading button indicator */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 0.65s linear infinite;
+}

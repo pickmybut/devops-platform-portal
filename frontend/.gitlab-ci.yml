@@ -1,0 +1,20 @@
+# Platform MFE CI/CD Configuration
+include:
+  - project: 'innovation/velocity-mfe-devops'
+    ref: main
+    file:
+      - '/gitlab-ci/templates/npm-registry-template.yml'
+      - '/gitlab-ci/templates/node-cache-template.yml'
+      - '/gitlab-ci/templates/bundle-template.yml'
+      - '/gitlab-ci/templates/cdk-deploy-template.yml'
+      - '/gitlab-ci/templates/common-scripts.yml'
+      - '/gitlab-ci/templates/cloudfront-invalidation-template.yml'
+      - '/gitlab-ci/templates/mend-template.yml'
+      - '/gitlab-ci/templates/slack-notification-template.yml'
+      - '/gitlab-ci/templates/test-template.yml'
+      - '/gitlab-ci/templates/mfe-base-ci.yml'
+
+variables:
+  MFE_APP_NAME: "platform"
+  MFE_APP_TYPE: "mfe"
+  MFE_DEFAULT_BRANCH: "main"

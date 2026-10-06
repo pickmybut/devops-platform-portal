@@ -1,0 +1,11 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# Platform SDKs
+python-gitlab==4.12.2        # GitLab
+PyGithub==2.5.0              # GitHub
+httpx==0.28.1                # Bitbucket (REST API v2)
+boto3==1.35.90               # AWS CodeCommit
