@@ -360,6 +360,126 @@ Terraform Apply:
     - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
       when: manual`,
   },
+  {
+    id: 'terraform-aws-oidc',
+    category: 'infra',
+    name: 'Terraform AWS Deploy (OIDC)',
+    description: 'Deploys Terraform to AWS using OIDC authentication — no long-lived credentials.',
+    code: `variables:
+  TF_ROOT: "\${CI_PROJECT_DIR}/terraform"
+  AWS_REGION: eu-west-1
+
+.aws-oidc:
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  id_tokens:
+    AWS_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apk add --no-cache aws-cli
+    - >
+      export AWS_ROLE_ARN="arn:aws:iam::\$AWS_ACCOUNT_ID:role/\$AWS_ROLE_NAME"
+    - >
+      aws sts assume-role-with-web-identity
+      --role-arn \$AWS_ROLE_ARN
+      --role-session-name "GitLabCI-\$CI_PIPELINE_ID"
+      --web-identity-token \$AWS_OIDC_TOKEN
+      --duration-seconds 3600
+      > /tmp/creds.json
+    - export AWS_ACCESS_KEY_ID=\$(cat /tmp/creds.json | grep -o '"AccessKeyId": "[^"]*' | cut -d'"' -f4)
+    - export AWS_SECRET_ACCESS_KEY=\$(cat /tmp/creds.json | grep -o '"SecretAccessKey": "[^"]*' | cut -d'"' -f4)
+    - export AWS_SESSION_TOKEN=\$(cat /tmp/creds.json | grep -o '"SessionToken": "[^"]*' | cut -d'"' -f4)
+    - cd \$TF_ROOT
+    - terraform init
+
+Terraform Plan:
+  extends: .aws-oidc
+  stage: plan
+  script:
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - \$TF_ROOT/tfplan
+    expire_in: 1 day
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+
+Terraform Apply:
+  extends: .aws-oidc
+  stage: deploy
+  environment:
+    name: production
+    url: https://console.aws.amazon.com
+  dependencies:
+    - Terraform Plan
+  script:
+    - terraform apply -auto-approve tfplan
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+      when: manual`,
+  },
+  {
+    id: 'terraform-aws-deploy',
+    category: 'deploy',
+    name: 'Terraform AWS Deploy',
+    description: 'Full Terraform deploy pipeline for AWS with plan artifact and environment tracking.',
+    code: `stages:
+  - validate
+  - plan
+  - deploy
+
+variables:
+  TF_ROOT: "\${CI_PROJECT_DIR}/terraform"
+  AWS_DEFAULT_REGION: eu-west-1
+
+.terraform:
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  before_script:
+    - cd \$TF_ROOT
+    - terraform init
+      -backend-config="bucket=\$TF_STATE_BUCKET"
+      -backend-config="key=\$CI_PROJECT_NAME/terraform.tfstate"
+      -backend-config="region=\$AWS_DEFAULT_REGION"
+      -backend-config="dynamodb_table=\$TF_LOCK_TABLE"
+
+Validate:
+  extends: .terraform
+  stage: validate
+  script:
+    - terraform validate
+    - terraform fmt -check -recursive
+
+Plan:
+  extends: .terraform
+  stage: plan
+  script:
+    - terraform plan -out=tfplan -input=false
+  artifacts:
+    name: "\$CI_COMMIT_REF_SLUG-tfplan"
+    paths:
+      - \$TF_ROOT/tfplan
+    expire_in: 7 days
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+
+Apply:
+  extends: .terraform
+  stage: deploy
+  environment:
+    name: production
+    url: https://\$AWS_DEFAULT_REGION.console.aws.amazon.com
+  dependencies:
+    - Plan
+  script:
+    - terraform apply -auto-approve -input=false tfplan
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+      when: manual
+  allow_failure: false`,
+  },
 
   // ── Security ───────────────────────────────────────────────────────────────
   {
