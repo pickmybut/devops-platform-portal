@@ -69,90 +69,105 @@ class GitHubService(BasePlatformService):
             name=name,
             description=description,
             private=(visibility == "private"),
-            auto_init=True,          # creates default branch so Git API works immediately
+            auto_init=True,          # creates default branch so Git Data API works immediately
             allow_squash_merge=True,
             allow_rebase_merge=True,
             allow_merge_commit=False,
             delete_branch_on_merge=True,
         )
 
+        # Re-fetch for a clean, fully-authenticated object
+        repo = g.get_repo(repo.full_name)
+
         if files:
-            # Upload via Contents API using httpx directly — same pattern as
-            # the Bitbucket service. This avoids PyGitHub object-state issues.
-            owner_login = namespace_id
-            repo_name   = name
-            work_branch = repo.default_branch  # whatever auto_init created
+            actual_branch = repo.default_branch
+            work_branch   = default_branch or actual_branch
 
-            # If the requested branch differs (e.g. user wants "main" but
-            # account default is "master"), create it from the auto-init SHA.
-            if work_branch != default_branch:
-                init_sha = repo.get_branch(work_branch).commit.sha
-                httpx.post(
-                    f"https://api.github.com/repos/{owner_login}/{repo_name}/git/refs",
-                    headers={
-                        "Authorization":        f"Bearer {self._token}",
-                        "Accept":               "application/vnd.github.v3+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"ref": f"refs/heads/{default_branch}", "sha": init_sha},
-                    timeout=15,
+            # Create requested branch if it differs from what auto_init made
+            if actual_branch != default_branch:
+                init_sha = repo.get_branch(actual_branch).commit.sha
+                try:
+                    repo.create_git_ref(f"refs/heads/{default_branch}", init_sha)
+                except GithubException:
+                    pass   # already exists
+
+            # Auto-init commit — used as parent for our scaffold commit
+            init_commit = repo.get_git_commit(
+                repo.get_branch(work_branch).commit.sha
+            )
+
+            # Separate workflow files (need 'workflow' scope) from the rest
+            workflow_paths = {p for p in files if p.startswith(".github/workflows/")}
+            upload_files   = {p: c for p, c in files.items() if p not in workflow_paths}
+
+            if workflow_paths:
+                logger.warning(
+                    "GitHub: skipping %d .github/workflows/ file(s) — requires 'workflow' "
+                    "scope on the token. Add it at https://github.com/settings/tokens",
+                    len(workflow_paths),
                 )
-                work_branch = default_branch
 
-            rest_headers = {
-                "Authorization":        f"Bearer {self._token}",
-                "Accept":               "application/vnd.github.v3+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            }
-
-            for path, content in sorted(files.items()):
-                encoded = base64.b64encode(
-                    content.encode("utf-8") if isinstance(content, str) else content
-                ).decode("utf-8")
-
-                file_url = f"https://api.github.com/repos/{owner_login}/{repo_name}/contents/{path}"
-
-                # Check if file already exists (README.md from auto_init needs its SHA)
-                check = httpx.get(file_url, headers=rest_headers,
-                                   params={"ref": work_branch}, timeout=15)
-                payload: dict = {
-                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                    "content": encoded,
-                    "branch":  work_branch,
-                }
-                if check.status_code == 200:
-                    payload["sha"] = check.json()["sha"]
-
-                resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
-
-                # .github/workflows/ requires the 'workflow' scope on the token.
-                # Skip gracefully — user can add the file manually or regenerate
-                # their token with 'workflow' scope.
-                if resp.status_code in (403, 404) and ".github/workflows/" in path:
-                    logger.warning(
-                        "GitHub: skipping '%s' — uploading workflow files requires "
-                        "'workflow' scope on your token. Add it at "
-                        "https://github.com/settings/tokens",
-                        path,
+            # ── Primary: Git Data API — single commit for all files ───────────
+            # N blobs + 1 tree + 1 commit + 1 ref = N+3 calls total.
+            # Uses init_commit.tree as base so README from auto_init is replaced.
+            try:
+                tree_elements: List[InputGitTreeElement] = []
+                for path, content in upload_files.items():
+                    blob = repo.create_git_blob(content, "utf-8")
+                    tree_elements.append(
+                        InputGitTreeElement(path, "100644", "blob", sha=blob.sha)
                     )
-                    continue
 
-                resp.raise_for_status()
-                logger.debug("GitHub: uploaded '%s'", path)
+                tree   = repo.create_git_tree(tree_elements, init_commit.tree)
+                commit = repo.create_git_commit(
+                    message="feat: initial scaffold from DevOps Self-Service Portal",
+                    tree=tree,
+                    parents=[init_commit],
+                )
+                ref = repo.get_git_ref(f"heads/{work_branch}")
+                ref.edit(commit.sha)
+                logger.info(
+                    "GitHub: pushed %d files to '%s' (1 commit via Git Data API)",
+                    len(upload_files), work_branch,
+                )
 
-            # Remove the auto-generated README if the scaffold doesn't include one
-            if "README.md" not in files:
-                readme_url = f"https://api.github.com/repos/{owner_login}/{repo_name}/contents/README.md"
-                check_readme = httpx.get(readme_url, headers=rest_headers,
-                                          params={"ref": work_branch}, timeout=15)
-                if check_readme.status_code == 200:
-                    httpx.delete(readme_url, headers=rest_headers, json={
-                        "message": "chore: remove auto-generated readme",
-                        "sha":     check_readme.json()["sha"],
+            except GithubException as exc:
+                # ── Fallback: Contents API — one call per file ────────────────
+                logger.warning(
+                    "GitHub: Git Data API failed (%s), falling back to Contents API",
+                    exc,
+                )
+                rest_headers = {
+                    "Authorization":        f"Bearer {self._token}",
+                    "Accept":               "application/vnd.github.v3+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                }
+                owner_login = namespace_id
+                repo_name   = name
+
+                for path, content in sorted(upload_files.items()):
+                    encoded  = base64.b64encode(
+                        content.encode("utf-8") if isinstance(content, str) else content
+                    ).decode("utf-8")
+                    file_url = f"https://api.github.com/repos/{owner_login}/{repo_name}/contents/{path}"
+                    check    = httpx.get(file_url, headers=rest_headers,
+                                         params={"ref": work_branch}, timeout=15)
+                    payload: dict = {
+                        "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                        "content": encoded,
                         "branch":  work_branch,
-                    }, timeout=15)
+                    }
+                    if check.status_code == 200:
+                        payload["sha"] = check.json()["sha"]
 
-            logger.info("GitHub: uploaded %d files to '%s'", len(files), work_branch)
+                    resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
+                    resp.raise_for_status()
+                    logger.debug("GitHub: uploaded '%s'", path)
+
+                logger.info(
+                    "GitHub: uploaded %d files to '%s' via Contents API fallback",
+                    len(upload_files), work_branch,
+                )
 
         return {
             "project_id":     str(repo.id),
