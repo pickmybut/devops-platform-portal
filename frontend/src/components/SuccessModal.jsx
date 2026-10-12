@@ -1,9 +1,18 @@
 import useAppStore from '../store/useAppStore';
 
+const PLATFORM_LABELS = {
+  gitlab:           { name: 'GitLab',           icon: '🦊' },
+  github:           { name: 'GitHub',            icon: '🐙' },
+  bitbucket:        { name: 'Bitbucket',         icon: '🪣' },
+  'aws-codepipeline': { name: 'AWS CodeCommit', icon: '⚡' },
+};
+
 const SuccessModal = () => {
   const { showSuccess, createdProject: p, closeSuccess, setCurrentPage, resetForm } = useAppStore();
 
   if (!showSuccess || !p) return null;
+
+  const platform = PLATFORM_LABELS[p.platform] ?? { name: p.platform ?? 'platform', icon: '🔧' };
 
   const handleCreateAnother = () => {
     closeSuccess();
@@ -28,7 +37,9 @@ const SuccessModal = () => {
             🎉
           </div>
           <h2 className="text-lg font-bold text-white">Repository Created!</h2>
-          <p className="mt-1 text-indigo-200 text-[12.5px]">Your project is live on GitLab</p>
+          <p className="mt-1 text-indigo-200 text-[12.5px]">
+            Your project is live on {platform.icon} {platform.name}
+          </p>
         </div>
 
         <div className="px-6 py-5 space-y-4">
@@ -40,7 +51,7 @@ const SuccessModal = () => {
             <p className="font-semibold text-slate-800">{p.name}</p>
             <div className="rounded-lg bg-white border border-slate-200 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-                Repository path
+                Repository URL
               </p>
               <p className="font-mono text-[12px] text-indigo-600 break-all">{p.url}</p>
             </div>
@@ -80,7 +91,7 @@ const SuccessModal = () => {
               className="flex-1 rounded-lg bg-indigo-600 py-2.5 text-center text-[13px]
                 font-semibold text-white hover:bg-indigo-700 transition-colors"
             >
-              Open in GitLab →
+              Open in {platform.name} →
             </a>
             <button
               onClick={handleCreateAnother}
