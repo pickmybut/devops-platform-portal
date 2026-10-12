@@ -349,6 +349,163 @@ const SectionPromptPanel = ({ label, icon }) => (
   </div>
 );
 
+// ── Pipeline Flow Diagram ─────────────────────────────────────────────────────
+const PIPELINE_STAGES = {
+  gitlab: [
+    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
+    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
+    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
+    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
+    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
+    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+  ],
+  github: [
+    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
+    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
+    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
+    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
+    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
+    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+  ],
+  bitbucket: [
+    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
+    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
+    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
+    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
+    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
+    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+  ],
+  'aws-codepipeline': [
+    { id: 'source', icon: '📥', label: 'Source', color: '#64748b', bg: '#f1f5f9' },
+    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
+    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
+    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
+    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
+    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+  ],
+};
+
+const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
+  // No diagram if no CI/CD or "none" selected
+  if (!cicd || cicd.id === 'none') return null;
+
+  const stages = PIPELINE_STAGES[platform?.id] || PIPELINE_STAGES.gitlab;
+
+  // Determine which stages are active based on selections
+  const getStageStatus = (stageId) => {
+    // All stages are active when CI/CD is selected
+    if (cicd && cicd.id !== 'none') return 'active';
+    return 'inactive';
+  };
+
+  // Get extra info for each stage
+  const getStageTooltip = (stageId) => {
+    const tips = {
+      test: 'Unit tests, linting, type checks',
+      build: infra?.id === 'lambda' ? 'Package Lambda zip' : 'Docker build & push to registry',
+      staging: infra?.id ? `Deploy to staging (${infra.name})` : 'Deploy to staging environment',
+      'load-test': 'k6/Artillery load tests against staging',
+      approval: 'Manual approval gate',
+      production: infra?.id ? `Deploy to production (${infra.name})` : 'Deploy to production',
+      source: 'CodeCommit / GitHub / S3 source',
+    };
+    return tips[stageId] || '';
+  };
+
+  return (
+    <div className="flex-shrink-0 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-center justify-between mb-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          Pipeline Flow
+        </p>
+        <span className="flex items-center gap-1 text-[10px] text-slate-400">
+          {platform?.icon} {platform?.name || 'GitLab'} CI/CD
+        </span>
+      </div>
+
+      {/* Pipeline stages flow */}
+      <div className="flex items-center gap-1 overflow-x-auto pb-1">
+        {stages.map((stage, idx) => {
+          const status = getStageStatus(stage.id);
+          const tooltip = getStageTooltip(stage.id);
+
+          return (
+            <div key={stage.id} className="flex items-center">
+              {/* Stage node */}
+              <div className="group relative flex flex-col items-center">
+                <div
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border-2 
+                    transition-all duration-200 ${
+                      status === 'active'
+                        ? 'border-current shadow-sm'
+                        : 'border-slate-200 bg-slate-50 opacity-40'
+                    }`}
+                  style={status === 'active' ? { 
+                    borderColor: stage.color, 
+                    backgroundColor: stage.bg 
+                  } : {}}
+                >
+                  <span className="text-[14px]">{stage.icon}</span>
+                </div>
+                <span
+                  className={`mt-1 text-[9px] font-semibold whitespace-nowrap ${
+                    status === 'active' ? 'text-slate-600' : 'text-slate-400'
+                  }`}
+                >
+                  {stage.label}
+                </span>
+
+                {/* Tooltip on hover */}
+                {tooltip && (
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 
+                    opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                    <div className="rounded-lg bg-slate-800 px-2 py-1 text-[10px] text-white 
+                      whitespace-nowrap shadow-lg">
+                      {tooltip}
+                    </div>
+                    <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 
+                      border-4 border-transparent border-t-slate-800" />
+                  </div>
+                )}
+              </div>
+
+              {/* Arrow connector */}
+              {idx < stages.length - 1 && (
+                <div className="flex items-center px-0.5">
+                  <div
+                    className={`h-0.5 w-3 ${
+                      status === 'active' ? 'bg-slate-300' : 'bg-slate-200'
+                    }`}
+                  />
+                  <div
+                    className={`h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] ${
+                      status === 'active' ? 'border-l-slate-300' : 'border-l-slate-200'
+                    }`}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Stage legend for IaC */}
+      {iac && iac.id !== 'none' && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <p className="text-[10px] text-slate-400">
+            <span className="font-medium text-slate-500">IaC:</span> {iac.icon} {iac.name} 
+            {infra && infra.id !== 'none' && (
+              <span className="ml-2">
+                <span className="font-medium text-slate-500">→</span> {infra.icon} {infra.name}
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Right panel: combined all-files preview ───────────────────────────────────
 const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreviewFiles, projectName }) => {
   // Merge all files, removing duplicates by path (later files win)
@@ -414,6 +571,14 @@ const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreview
           ))}
         </div>
       </div>
+
+      {/* Pipeline Flow Diagram */}
+      <PipelineFlowDiagram
+        platform={form.platform}
+        cicd={form.cicd}
+        infra={form.infra}
+        iac={form.iac}
+      />
 
       {/* File tree */}
       <div className="flex-1 min-h-0">
