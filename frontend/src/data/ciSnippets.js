@@ -219,6 +219,147 @@ export const CI_SNIPPETS = [
     - when: manual
       allow_failure: true`,
   },
+  {
+    id: 'terraform-validate',
+    category: 'infra',
+    name: 'Terraform Validate',
+    description: 'Initializes Terraform and validates configuration syntax.',
+    code: `Terraform Validate:
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  script:
+    - terraform init -backend=false
+    - terraform validate
+    - terraform fmt -check -recursive
+  rules:
+    - if: '\$CI_PIPELINE_SOURCE == "merge_request_event"'`,
+  },
+  {
+    id: 'terraform-plan',
+    category: 'infra',
+    name: 'Terraform Plan',
+    description: 'Generates an execution plan and saves it as an artifact for review.',
+    code: `Terraform Plan:
+  stage: plan
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  script:
+    - terraform init
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - tfplan
+    expire_in: 1 day
+  rules:
+    - if: '\$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'`,
+  },
+  {
+    id: 'terraform-apply',
+    category: 'infra',
+    name: 'Terraform Apply',
+    description: 'Applies the saved Terraform plan to provision infrastructure.',
+    code: `Terraform Apply:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  environment:
+    name: \$CI_ENVIRONMENT_NAME
+  dependencies:
+    - Terraform Plan
+  script:
+    - terraform init
+    - terraform apply -auto-approve tfplan
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+      when: manual`,
+  },
+  {
+    id: 'terraform-destroy',
+    category: 'infra',
+    name: 'Terraform Destroy',
+    description: 'Destroys all resources managed by Terraform — manual trigger only.',
+    code: `Terraform Destroy:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  environment:
+    name: \$CI_ENVIRONMENT_NAME
+  script:
+    - terraform init
+    - terraform destroy -auto-approve
+  rules:
+    - when: manual
+      allow_failure: true`,
+  },
+  {
+    id: 'terraform-full-pipeline',
+    category: 'infra',
+    name: 'Terraform Full Pipeline',
+    description: 'Complete Terraform workflow with remote S3 backend and state locking.',
+    code: `variables:
+  TF_ROOT: "\${CI_PROJECT_DIR}/terraform"
+  TF_STATE_NAME: \$CI_PROJECT_NAME
+
+.terraform-base:
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  before_script:
+    - cd \$TF_ROOT
+    - |
+      cat > backend.tf <<EOF
+      terraform {
+        backend "s3" {
+          bucket         = "\$TF_STATE_BUCKET"
+          key            = "\$TF_STATE_NAME/terraform.tfstate"
+          region         = "\$AWS_DEFAULT_REGION"
+          dynamodb_table = "\$TF_LOCK_TABLE"
+          encrypt        = true
+        }
+      }
+      EOF
+    - terraform init
+
+Terraform Validate:
+  extends: .terraform-base
+  stage: validate
+  script:
+    - terraform validate
+    - terraform fmt -check -recursive
+  rules:
+    - if: '\$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+Terraform Plan:
+  extends: .terraform-base
+  stage: plan
+  script:
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - \$TF_ROOT/tfplan
+    expire_in: 1 day
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+
+Terraform Apply:
+  extends: .terraform-base
+  stage: deploy
+  environment:
+    name: production
+  dependencies:
+    - Terraform Plan
+  script:
+    - terraform apply -auto-approve tfplan
+  rules:
+    - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
+      when: manual`,
+  },
 
   // ── Security ───────────────────────────────────────────────────────────────
   {
