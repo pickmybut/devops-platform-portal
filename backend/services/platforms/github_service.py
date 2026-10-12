@@ -97,20 +97,11 @@ class GitHubService(BasePlatformService):
                 repo.get_branch(work_branch).commit.sha
             )
 
-            # Separate workflow files (need 'workflow' scope) from the rest
-            workflow_paths = {p for p in files if p.startswith(".github/workflows/")}
-            upload_files   = {p: c for p, c in files.items() if p not in workflow_paths}
-
-            if workflow_paths:
-                logger.warning(
-                    "GitHub: skipping %d .github/workflows/ file(s) — requires 'workflow' "
-                    "scope on the token. Add it at https://github.com/settings/tokens",
-                    len(workflow_paths),
-                )
-
             # ── Primary: Git Data API — single commit for all files ───────────
             # Creates all blobs in parallel (ThreadPoolExecutor), then
             # builds the tree + commit in one shot.  N+3 calls total.
+            # The Git Data API treats files as plain blobs — no path-based
+            # restrictions, so .github/workflows/ files upload fine here.
             try:
                 def _make_blob(item):
                     path, content = item
@@ -121,7 +112,7 @@ class GitHubService(BasePlatformService):
                 with ThreadPoolExecutor(max_workers=10) as pool:
                     futures = {
                         pool.submit(_make_blob, item): item[0]
-                        for item in upload_files.items()
+                        for item in files.items()
                     }
                     for future in as_completed(futures):
                         path, sha = future.result()
@@ -156,7 +147,7 @@ class GitHubService(BasePlatformService):
                 owner_login = namespace_id
                 repo_name   = name
 
-                for path, content in sorted(upload_files.items()):
+                for path, content in sorted(files.items()):
                     encoded  = base64.b64encode(
                         content.encode("utf-8") if isinstance(content, str) else content
                     ).decode("utf-8")
@@ -172,6 +163,17 @@ class GitHubService(BasePlatformService):
                         payload["sha"] = check.json()["sha"]
 
                     resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
+
+                    # .github/workflows/ requires 'workflow' scope on the token
+                    # when using the Contents API — skip gracefully
+                    if resp.status_code in (403, 404) and ".github/workflows/" in path:
+                        logger.warning(
+                            "GitHub: skipping '%s' (Contents API fallback needs 'workflow' "
+                            "scope — add it at https://github.com/settings/tokens)",
+                            path,
+                        )
+                        continue
+
                     resp.raise_for_status()
                     logger.debug("GitHub: uploaded '%s'", path)
 
