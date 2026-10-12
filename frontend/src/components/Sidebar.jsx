@@ -5,14 +5,14 @@ const NAV = [
   {
     section: 'Main',
     items: [
-      { id: 'create',       icon: '✦', label: 'Create Project' },
-      { id: 'dashboard',    icon: '⊞', label: 'Dashboard' },
+      { id: 'create',       icon: '🛠️',  label: 'Create Project' },
+      { id: 'dashboard',    icon: '📊',  label: 'Dashboard' },
     ],
   },
   {
     section: 'Resources',
     items: [
-      { id: 'ci-templates', icon: '📄', label: 'CI Templates' },
+      { id: 'ci-templates', icon: '📋',  label: 'CI Templates' },
     ],
   },
 ];
@@ -135,18 +135,30 @@ const Sidebar = () => {
                     key={id}
                     onClick={() => setCurrentPage(id)}
                     style={{
-                      background: active ? 'rgba(99,102,241,0.28)' : 'transparent',
+                      background: active ? 'rgba(99,102,241,0.25)' : 'transparent',
                       color: active ? '#fff' : '#c7d2fe',
                     }}
-                    className={`w-full flex items-center rounded-lg text-[13px] mb-0.5
-                      text-left cursor-pointer transition-all hover:bg-white/[0.07]
-                      ${sidebarCollapsed 
-                        ? 'justify-center px-2 py-2.5' 
+                    className={`group relative w-full flex items-center rounded-lg text-[13px] mb-0.5
+                      text-left cursor-pointer transition-all duration-150
+                      hover:bg-indigo-500/[0.18] hover:text-white
+                      ${sidebarCollapsed
+                        ? 'justify-center px-2 py-2.5'
                         : 'gap-2.5 px-2.5 py-2'
                       }`}
                     title={sidebarCollapsed ? label : undefined}
                   >
-                    <span className={`text-[15px] leading-none ${sidebarCollapsed ? '' : 'w-[18px] text-center'}`}>
+                    {/* Active left-border indicator */}
+                    {active && !sidebarCollapsed && (
+                      <span
+                        className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 rounded-full bg-indigo-400"
+                      />
+                    )}
+
+                    <span
+                      className={`leading-none transition-transform duration-150
+                        group-hover:scale-110
+                        ${sidebarCollapsed ? 'text-[18px]' : 'text-[15px] w-[18px] text-center'}`}
+                    >
                       {icon}
                     </span>
                     {!sidebarCollapsed && (
