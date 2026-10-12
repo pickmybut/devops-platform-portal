@@ -350,67 +350,96 @@ const SectionPromptPanel = ({ label, icon }) => (
 );
 
 // ── Pipeline Flow Diagram ─────────────────────────────────────────────────────
-const PIPELINE_STAGES = {
-  gitlab: [
-    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
-    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
-    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
-    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
-    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
-    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
-  ],
-  github: [
-    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
-    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
-    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
-    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
-    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
-    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
-  ],
-  bitbucket: [
-    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
-    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
-    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
-    { id: 'load-test', icon: '📊', label: 'Load Test', color: '#6366f1', bg: '#eef2ff' },
-    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
-    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
-  ],
-  'aws-codepipeline': [
-    { id: 'source', icon: '📥', label: 'Source', color: '#64748b', bg: '#f1f5f9' },
-    { id: 'build', icon: '🔨', label: 'Build', color: '#f59e0b', bg: '#fffbeb' },
-    { id: 'test', icon: '🧪', label: 'Test', color: '#818cf8', bg: '#eef2ff' },
-    { id: 'staging', icon: '🚀', label: 'Staging', color: '#10b981', bg: '#ecfdf5' },
-    { id: 'approval', icon: '✋', label: 'Approval', color: '#ef4444', bg: '#fef2f2' },
-    { id: 'production', icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
-  ],
+// Base stage definitions
+const STAGE_DEFS = {
+  source:     { icon: '📥', label: 'Source',     color: '#64748b', bg: '#f1f5f9' },
+  test:       { icon: '🧪', label: 'Test',       color: '#818cf8', bg: '#eef2ff' },
+  build:      { icon: '🔨', label: 'Build',      color: '#f59e0b', bg: '#fffbeb' },
+  package:    { icon: '📦', label: 'Package',    color: '#f59e0b', bg: '#fffbeb' },
+  docker:     { icon: '🐳', label: 'Docker',     color: '#0ea5e9', bg: '#e0f2fe' },
+  push:       { icon: '⬆️', label: 'Push ECR',   color: '#06b6d4', bg: '#cffafe' },
+  staging:    { icon: '🚀', label: 'Staging',    color: '#10b981', bg: '#ecfdf5' },
+  'load-test':{ icon: '📊', label: 'Load Test',  color: '#6366f1', bg: '#eef2ff' },
+  approval:   { icon: '✋', label: 'Approval',   color: '#ef4444', bg: '#fef2f2' },
+  production: { icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+  sync:       { icon: '☁️', label: 'S3 Sync',    color: '#0ea5e9', bg: '#e0f2fe' },
+  invalidate: { icon: '🔄', label: 'CDN Flush',  color: '#8b5cf6', bg: '#ede9fe' },
+  upload:     { icon: '📤', label: 'Upload',     color: '#f59e0b', bg: '#fffbeb' },
+  codedeploy: { icon: '🚀', label: 'CodeDeploy', color: '#10b981', bg: '#ecfdf5' },
+  helm:       { icon: '⎈', label: 'Helm',       color: '#0ea5e9', bg: '#e0f2fe' },
+  kubectl:    { icon: '☸️', label: 'kubectl',    color: '#326ce5', bg: '#dbeafe' },
 };
+
+// Infrastructure-specific pipeline flows
+const INFRA_PIPELINES = {
+  // Container-based (ECS Fargate, ECS EC2)
+  'ecs-fargate': ['test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
+  'ecs-ec2':     ['test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
+
+  // Kubernetes
+  'eks':         ['test', 'docker', 'push', 'helm', 'staging', 'load-test', 'approval', 'production'],
+  'k8s-ec2':     ['test', 'docker', 'push', 'kubectl', 'staging', 'load-test', 'approval', 'production'],
+
+  // Serverless
+  'lambda':      ['test', 'package', 'staging', 'load-test', 'approval', 'production'],
+
+  // Static hosting
+  's3-cloudfront': ['test', 'build', 'sync', 'invalidate', 'staging', 'approval', 'production'],
+
+  // Traditional EC2
+  'ec2':         ['test', 'build', 'upload', 'codedeploy', 'staging', 'approval', 'production'],
+
+  // Default (no infra selected)
+  'default':     ['test', 'build', 'staging', 'load-test', 'approval', 'production'],
+};
+
+// AWS CodePipeline has Source stage first
+const CODEPIPELINE_INFRA_PIPELINES = {
+  'ecs-fargate':   ['source', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
+  'ecs-ec2':       ['source', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
+  'eks':           ['source', 'test', 'docker', 'push', 'helm', 'staging', 'approval', 'production'],
+  'k8s-ec2':       ['source', 'test', 'docker', 'push', 'kubectl', 'staging', 'approval', 'production'],
+  'lambda':        ['source', 'test', 'package', 'staging', 'approval', 'production'],
+  's3-cloudfront': ['source', 'build', 'sync', 'invalidate', 'approval', 'production'],
+  'ec2':           ['source', 'build', 'upload', 'codedeploy', 'approval', 'production'],
+  'default':       ['source', 'build', 'test', 'staging', 'approval', 'production'],
+};
+
+// Tooltips based on infrastructure
+const getStageTooltips = (infraId) => ({
+  source:     'CodeCommit / GitHub / S3 source',
+  test:       'Unit tests, linting, type checks',
+  build:      infraId === 's3-cloudfront' ? 'npm build static assets' : 'Compile application',
+  package:    'Package Lambda deployment zip',
+  docker:     'Build Docker image',
+  push:       'Push image to ECR registry',
+  sync:       'Sync build artifacts to S3 bucket',
+  invalidate: 'Invalidate CloudFront cache',
+  upload:     'Upload artifact to S3 for CodeDeploy',
+  codedeploy: 'CodeDeploy to EC2 instances',
+  helm:       'Helm upgrade to EKS cluster',
+  kubectl:    'kubectl apply to K8s cluster',
+  staging:    infraId ? `Deploy to staging` : 'Deploy to staging environment',
+  'load-test': 'k6/Artillery load tests against staging',
+  approval:   'Manual approval gate',
+  production: infraId ? `Deploy to production` : 'Deploy to production',
+});
 
 const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
   // No diagram if no CI/CD or "none" selected
   if (!cicd || cicd.id === 'none') return null;
 
-  const stages = PIPELINE_STAGES[platform?.id] || PIPELINE_STAGES.gitlab;
+  // Get infrastructure-specific pipeline stages
+  const infraId = infra?.id && infra.id !== 'none' ? infra.id : 'default';
+  const isCodePipeline = platform?.id === 'aws-codepipeline';
+  
+  const pipelineStages = isCodePipeline
+    ? (CODEPIPELINE_INFRA_PIPELINES[infraId] || CODEPIPELINE_INFRA_PIPELINES.default)
+    : (INFRA_PIPELINES[infraId] || INFRA_PIPELINES.default);
 
-  // Determine which stages are active based on selections
-  const getStageStatus = (stageId) => {
-    // All stages are active when CI/CD is selected
-    if (cicd && cicd.id !== 'none') return 'active';
-    return 'inactive';
-  };
-
-  // Get extra info for each stage
-  const getStageTooltip = (stageId) => {
-    const tips = {
-      test: 'Unit tests, linting, type checks',
-      build: infra?.id === 'lambda' ? 'Package Lambda zip' : 'Docker build & push to registry',
-      staging: infra?.id ? `Deploy to staging (${infra.name})` : 'Deploy to staging environment',
-      'load-test': 'k6/Artillery load tests against staging',
-      approval: 'Manual approval gate',
-      production: infra?.id ? `Deploy to production (${infra.name})` : 'Deploy to production',
-      source: 'CodeCommit / GitHub / S3 source',
-    };
-    return tips[stageId] || '';
-  };
+  // Build stages array with definitions
+  const stages = pipelineStages.map(id => ({ id, ...STAGE_DEFS[id] }));
+  const tooltips = getStageTooltips(infraId);
 
   return (
     <div className="flex-shrink-0 rounded-xl border border-slate-200 bg-white p-3">
@@ -426,32 +455,23 @@ const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
       {/* Pipeline stages flow */}
       <div className="flex items-center gap-1 overflow-x-auto pb-1">
         {stages.map((stage, idx) => {
-          const status = getStageStatus(stage.id);
-          const tooltip = getStageTooltip(stage.id);
+          const tooltip = tooltips[stage.id] || '';
 
           return (
             <div key={stage.id} className="flex items-center">
               {/* Stage node */}
               <div className="group relative flex flex-col items-center">
                 <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border-2 
-                    transition-all duration-200 ${
-                      status === 'active'
-                        ? 'border-current shadow-sm'
-                        : 'border-slate-200 bg-slate-50 opacity-40'
-                    }`}
-                  style={status === 'active' ? { 
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border-2 
+                    transition-all duration-200 shadow-sm"
+                  style={{ 
                     borderColor: stage.color, 
                     backgroundColor: stage.bg 
-                  } : {}}
+                  }}
                 >
                   <span className="text-[14px]">{stage.icon}</span>
                 </div>
-                <span
-                  className={`mt-1 text-[9px] font-semibold whitespace-nowrap ${
-                    status === 'active' ? 'text-slate-600' : 'text-slate-400'
-                  }`}
-                >
+                <span className="mt-1 text-[9px] font-semibold whitespace-nowrap text-slate-600">
                   {stage.label}
                 </span>
 
@@ -472,16 +492,8 @@ const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
               {/* Arrow connector */}
               {idx < stages.length - 1 && (
                 <div className="flex items-center px-0.5">
-                  <div
-                    className={`h-0.5 w-3 ${
-                      status === 'active' ? 'bg-slate-300' : 'bg-slate-200'
-                    }`}
-                  />
-                  <div
-                    className={`h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] ${
-                      status === 'active' ? 'border-l-slate-300' : 'border-l-slate-200'
-                    }`}
-                  />
+                  <div className="h-0.5 w-3 bg-slate-300" />
+                  <div className="h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-slate-300" />
                 </div>
               )}
             </div>
@@ -489,14 +501,14 @@ const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
         })}
       </div>
 
-      {/* Stage legend for IaC */}
-      {iac && iac.id !== 'none' && (
+      {/* Infrastructure context */}
+      {infra && infra.id !== 'none' && (
         <div className="mt-2 pt-2 border-t border-slate-100">
           <p className="text-[10px] text-slate-400">
-            <span className="font-medium text-slate-500">IaC:</span> {iac.icon} {iac.name} 
-            {infra && infra.id !== 'none' && (
+            <span className="font-medium text-slate-500">Target:</span> {infra.icon} {infra.name}
+            {iac && iac.id !== 'none' && (
               <span className="ml-2">
-                <span className="font-medium text-slate-500">→</span> {infra.icon} {infra.name}
+                <span className="font-medium text-slate-500">via</span> {iac.icon} {iac.name}
               </span>
             )}
           </p>
