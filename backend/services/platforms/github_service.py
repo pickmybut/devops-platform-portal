@@ -124,6 +124,19 @@ class GitHubService(BasePlatformService):
                     payload["sha"] = check.json()["sha"]
 
                 resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
+
+                # .github/workflows/ requires the 'workflow' scope on the token.
+                # Skip gracefully — user can add the file manually or regenerate
+                # their token with 'workflow' scope.
+                if resp.status_code in (403, 404) and ".github/workflows/" in path:
+                    logger.warning(
+                        "GitHub: skipping '%s' — uploading workflow files requires "
+                        "'workflow' scope on your token. Add it at "
+                        "https://github.com/settings/tokens",
+                        path,
+                    )
+                    continue
+
                 resp.raise_for_status()
                 logger.debug("GitHub: uploaded '%s'", path)
 
