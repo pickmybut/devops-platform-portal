@@ -990,6 +990,7 @@ const CreateProjectPage = () => {
         projectType: form.projectType,
         iac:         form.iac,
         cicd:        form.cicd,
+        platform:    form.platform?.id,
         features:    ADDITIONAL_FEATURES.filter((f) => form.features.includes(f.id)),
         namespace:   data.namespace_path,
         url:         data.project_url,
