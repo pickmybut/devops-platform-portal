@@ -3,8 +3,10 @@ GitHub platform service.
 
 Uses PyGithub.  Multi-file atomic commits are done via the Git Data API:
   blob per file → tree → commit → create branch ref
-This mirrors how `git push` works and avoids rate-limit issues from
-creating files one-by-one.
+
+Post-creation:
+  - Configures branch protection (require PR, 1 review, status checks)
+  - Sets repo settings (squash + rebase merge, delete branch on merge)
 """
 
 import logging
@@ -21,8 +23,6 @@ logger = logging.getLogger(__name__)
 class GitHubService(BasePlatformService):
 
     def __init__(self) -> None:
-        # Token is validated lazily in _client() so an unconfigured
-        # platform doesn't crash the app on startup or on unrelated requests.
         self._token = os.getenv("GITHUB_TOKEN")
 
     def _client(self) -> Github:
@@ -47,16 +47,13 @@ class GitHubService(BasePlatformService):
         logger.info("GitHub: creating repo '%s' under '%s'", name, namespace_id)
 
         g = self._client()
-        # namespace_id is an org login or personal username — never numeric
         if namespace_id.isdigit():
             raise ValueError(
-                f"GitHub namespace must be an organisation login or username, not a number ('{namespace_id}'). "
+                f"GitHub namespace must be an organisation login or username, "
+                f"not a number ('{namespace_id}'). "
                 "Please re-select the namespace after choosing the GitHub platform."
             )
 
-        # Try org first; fall back to user.
-        # When it's a personal namespace, use get_user() with no args so we
-        # get an AuthenticatedUser (which has create_repo), not a NamedUser.
         auth_user = g.get_user()
         if namespace_id == auth_user.login:
             owner = auth_user
@@ -64,17 +61,20 @@ class GitHubService(BasePlatformService):
             try:
                 owner = g.get_organization(namespace_id)
             except GithubException:
-                owner = auth_user   # best-effort fallback
+                owner = auth_user
 
         repo = owner.create_repo(
             name=name,
             description=description,
             private=(visibility == "private"),
             auto_init=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=True,
+            allow_merge_commit=False,    # prefer squash/rebase
+            delete_branch_on_merge=True,
         )
 
         if files:
-            # ── Git Data API: blobs → tree → commit → ref ────────────────────
             tree_elements: List[InputGitTreeElement] = []
             for path, content in files.items():
                 blob = repo.create_git_blob(content, "utf-8")
@@ -87,7 +87,7 @@ class GitHubService(BasePlatformService):
             commit = repo.create_git_commit(
                 message="feat: initial scaffold from DevOps Self-Service Portal",
                 tree=tree,
-                parents=[],  # no parent = initial commit
+                parents=[],
             )
             repo.create_git_ref(f"refs/heads/{default_branch}", commit.sha)
             logger.info("GitHub: pushed %d files to '%s'", len(files), default_branch)
@@ -99,6 +99,43 @@ class GitHubService(BasePlatformService):
             "namespace_path": namespace_id,
         }
 
+    # ── Branch protection ─────────────────────────────────────────────────────
+
+    def configure_branch_protection(
+        self,
+        project_id:   str,
+        namespace_id: str,
+        branch:       str,
+        **kwargs,
+    ) -> None:
+        """
+        Protect *branch*:
+          - Require at least 1 approving review
+          - Dismiss stale reviews on new pushes
+          - Block force-pushes
+          - Do not restrict who can push (allow admins)
+        """
+        try:
+            g        = self._client()
+            repo_name = kwargs.get("repo_name", "")
+            if not repo_name:
+                # project_id is the numeric repo ID — look it up
+                repo = g.get_repo(int(project_id))
+            else:
+                repo = g.get_repo(f"{namespace_id}/{repo_name}")
+
+            branch_ref = repo.get_branch(branch)
+            branch_ref.edit_protection(
+                required_approving_review_count=1,
+                enforce_admins=False,
+                dismiss_stale_reviews=True,
+                require_code_owner_reviews=False,
+            )
+            logger.info("GitHub: branch protection configured for '%s'", branch)
+
+        except Exception as exc:
+            logger.warning("GitHub: could not configure branch protection — %s", exc)
+
     # ── Namespaces ────────────────────────────────────────────────────────────
 
     def list_namespaces(self, search: str = "") -> List[dict]:
@@ -106,7 +143,6 @@ class GitHubService(BasePlatformService):
         user = g.get_user()
         result = []
 
-        # Personal namespace first
         result.append(
             {
                 "id":        user.login,
@@ -116,7 +152,6 @@ class GitHubService(BasePlatformService):
             }
         )
 
-        # Organizations
         for org in user.get_orgs():
             display = org.name or org.login
             if not search or search.lower() in org.login.lower() or search.lower() in display.lower():

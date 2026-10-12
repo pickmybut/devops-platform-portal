@@ -1,8 +1,9 @@
 """
 Platform API — DevOps Self-Service Portal backend.
 
-Receives rendered scaffold files from the frontend and creates repositories
-on the chosen platform (GitLab, GitHub, Bitbucket, AWS CodeCommit).
+Receives rendered scaffold files from the frontend, creates repositories
+on the chosen platform (GitLab, GitHub, Bitbucket, AWS CodeCommit),
+configures branch protection, and persists project records to the database.
 """
 
 import logging
@@ -13,22 +14,24 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from database import create_tables
 from routers import health, namespaces, projects
 
-# Load .env before anything reads os.getenv()
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
-
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Platform API starting — supported platforms: GitLab, GitHub, Bitbucket, AWS CodeCommit")
+    # Ensure all database tables exist before serving requests
+    logger.info("Platform API starting — creating database tables if needed")
+    create_tables()
+    logger.info("Platform API ready — supported platforms: GitLab, GitHub, Bitbucket, AWS CodeCommit")
     yield
     logger.info("Platform API shutting down")
 
@@ -36,7 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Platform API",
     description="DevOps Self-Service — multi-platform repository scaffolding",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -52,6 +55,6 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(health.router,      prefix="/api")
-app.include_router(namespaces.router,  prefix="/api")
-app.include_router(projects.router,    prefix="/api")
+app.include_router(health.router,     prefix="/api")
+app.include_router(namespaces.router, prefix="/api")
+app.include_router(projects.router,   prefix="/api")

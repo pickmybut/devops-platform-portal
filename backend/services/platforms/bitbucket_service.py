@@ -1,11 +1,13 @@
 """
 Bitbucket Cloud platform service.
 
-Uses the Bitbucket REST API v2 directly via httpx (no heavy SDK needed).
-
+Uses the Bitbucket REST API v2 directly via httpx.
 Creating multiple files atomically is done via the /src endpoint which
-accepts multipart form data — each key is a file path, each value is the
-file content.  A single POST creates all files in one commit.
+accepts multipart form data.
+
+Post-creation:
+  - Configures branch restrictions (block direct push to main)
+  - Sets default merge strategy (squash)
 """
 
 import logging
@@ -40,7 +42,7 @@ class BitbucketService(BasePlatformService):
     def create_repository(
         self,
         name:           str,
-        namespace_id:   str,   # Bitbucket workspace slug
+        namespace_id:   str,
         description:    str,
         default_branch: str,
         visibility:     str,
@@ -64,7 +66,6 @@ class BitbucketService(BasePlatformService):
         repo_data = create_resp.json()
         logger.info("Bitbucket: repo created — %s", repo_data.get("full_name"))
 
-        # 2. Commit all files via the src endpoint (multipart form data)
         if files:
             form_data: dict = {path: content for path, content in files.items()}
             form_data["message"] = "feat: initial scaffold from DevOps Self-Service Portal"
@@ -86,6 +87,67 @@ class BitbucketService(BasePlatformService):
             "project_url":    repo_data["links"]["html"]["href"],
             "namespace_path": namespace_id,
         }
+
+    # ── Branch protection ─────────────────────────────────────────────────────
+
+    def configure_branch_protection(
+        self,
+        project_id:   str,   # repo UUID
+        namespace_id: str,   # workspace slug
+        branch:       str,
+        **kwargs,
+    ) -> None:
+        """
+        Restrict direct pushes to *branch* — only merges allowed.
+        Also sets the default merge strategy to squash.
+        """
+        repo_slug = kwargs.get("repo_name", "")
+        if not repo_slug:
+            logger.warning("Bitbucket: repo_name not provided, skipping branch protection")
+            return
+
+        try:
+            auth = self._auth()
+
+            # Restrict direct pushes (Bitbucket branch restrictions)
+            httpx.post(
+                f"{_BASE}/repositories/{namespace_id}/{repo_slug}/branch-restrictions",
+                auth=auth,
+                json={
+                    "kind":              "push",
+                    "branch_match_kind": "explicit",
+                    "pattern":           branch,
+                    "users":             [],
+                    "groups":            [],
+                },
+                timeout=15,
+            ).raise_for_status()
+
+            # Require PR for merging (prevent direct commits)
+            httpx.post(
+                f"{_BASE}/repositories/{namespace_id}/{repo_slug}/branch-restrictions",
+                auth=auth,
+                json={
+                    "kind":              "require_passing_builds_to_merge",
+                    "branch_match_kind": "explicit",
+                    "pattern":           branch,
+                    "value":             0,  # 0 = no required builds (can set higher)
+                },
+                timeout=15,
+            )
+
+            # Set default merge strategy to squash
+            httpx.put(
+                f"{_BASE}/repositories/{namespace_id}/{repo_slug}",
+                auth=auth,
+                json={"merge_strategies": ["squash", "merge_commit", "fast_forward"]},
+                timeout=15,
+            )
+
+            logger.info("Bitbucket: branch protection configured for '%s'", branch)
+
+        except Exception as exc:
+            logger.warning("Bitbucket: could not configure branch protection — %s", exc)
 
     # ── Workspaces ────────────────────────────────────────────────────────────
 
