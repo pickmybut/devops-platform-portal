@@ -1273,7 +1273,7 @@ const CreateProjectPage = () => {
 
   // ── Right Panel Content ─────────────────────────────────────────────────────
   const rightPanelContent = (
-    <>
+    <div className="h-full flex flex-col">
       {/* Nothing interacted yet */}
       {activeSection === null && <EmptyPreviewPanel />}
 
@@ -1286,7 +1286,7 @@ const CreateProjectPage = () => {
           )}
           {templateDef && (
             <div className="flex h-full flex-col gap-2">
-              <div className="flex items-center justify-between px-1">
+              <div className="flex items-center justify-between px-1 flex-shrink-0">
                 <p className="text-[11.5px] font-semibold text-slate-500">
                   {form.projectType.icon} {form.projectType.name} scaffold
                   <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5
@@ -1512,7 +1512,7 @@ const CreateProjectPage = () => {
               projectName={form.repoName.trim() || (templateDef?.previewVars?.projectName ?? 'my-project')}
             />
           )}
-        </>
+        </div>
       );
 
   return (

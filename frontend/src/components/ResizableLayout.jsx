@@ -52,7 +52,8 @@ const ResizableDivider = ({ onResize, minLeft, minRight, containerRef }) => {
       ref={dividerRef}
       onMouseDown={handleMouseDown}
       className="group flex-shrink-0 w-2 cursor-col-resize flex items-center justify-center
-        hover:bg-indigo-100 active:bg-indigo-200 rounded-full transition-colors mx-1"
+        hover:bg-indigo-100 active:bg-indigo-200 rounded-full transition-colors mx-1
+        self-stretch"
       title="Drag to resize panels"
     >
       <div className="w-0.5 h-16 bg-slate-300 group-hover:bg-indigo-400 
@@ -69,7 +70,6 @@ const ResizableLayout = ({
   minRightWidth = 300,
   defaultRightWidth = 460,
   showRightPanel = true,
-  rightPanelHeight = 'calc(100vh - 96px)',
 }) => {
   const [rightWidth, setRightWidth] = useState(defaultRightWidth);
   const containerRef = useRef(null);
@@ -80,8 +80,12 @@ const ResizableLayout = ({
   }
 
   return (
-    <div ref={containerRef} className="flex items-start h-full">
-      {/* Left Panel */}
+    <div 
+      ref={containerRef} 
+      className="flex items-stretch"
+      style={{ minHeight: 'calc(100vh - 96px)' }}
+    >
+      {/* Left Panel - scrolls with page */}
       <div className="min-w-0 flex-1" style={{ marginRight: '0.5rem' }}>
         {leftPanel}
       </div>
@@ -94,12 +98,18 @@ const ResizableLayout = ({
         containerRef={containerRef}
       />
 
-      {/* Right Panel */}
+      {/* Right Panel - sticky with internal scroll */}
       <div 
-        className="flex-shrink-0 sticky top-6"
-        style={{ width: `${rightWidth}px`, height: rightPanelHeight }}
+        className="flex-shrink-0 sticky top-6 flex flex-col"
+        style={{ 
+          width: `${rightWidth}px`, 
+          height: 'calc(100vh - 96px)',
+          maxHeight: 'calc(100vh - 96px)',
+        }}
       >
-        {rightPanel}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+          {rightPanel}
+        </div>
       </div>
     </div>
   );
