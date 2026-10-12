@@ -9,11 +9,13 @@ Post-creation:
   - Sets repo settings (squash + rebase merge, delete branch on merge)
 """
 
+import base64
 import logging
 import os
 from typing import Dict, List
 
-from github import Github, GithubException, InputGitTreeElement
+import httpx
+from github import Github, GithubException
 
 from .base import BasePlatformService
 
@@ -67,30 +69,77 @@ class GitHubService(BasePlatformService):
             name=name,
             description=description,
             private=(visibility == "private"),
-            auto_init=False,
+            auto_init=True,          # creates default branch so Git API works immediately
             allow_squash_merge=True,
             allow_rebase_merge=True,
-            allow_merge_commit=False,    # prefer squash/rebase
+            allow_merge_commit=False,
             delete_branch_on_merge=True,
         )
 
         if files:
-            tree_elements: List[InputGitTreeElement] = []
-            for path, content in files.items():
-                blob = repo.create_git_blob(content, "utf-8")
-                tree_elements.append(
-                    InputGitTreeElement(path, "100644", "blob", sha=blob.sha)
-                )
-                logger.debug("GitHub: created blob for '%s'", path)
+            # Upload via Contents API using httpx directly — same pattern as
+            # the Bitbucket service. This avoids PyGitHub object-state issues.
+            owner_login = namespace_id
+            repo_name   = name
+            work_branch = repo.default_branch  # whatever auto_init created
 
-            tree   = repo.create_git_tree(tree_elements)
-            commit = repo.create_git_commit(
-                message="feat: initial scaffold from DevOps Self-Service Portal",
-                tree=tree,
-                parents=[],
-            )
-            repo.create_git_ref(f"refs/heads/{default_branch}", commit.sha)
-            logger.info("GitHub: pushed %d files to '%s'", len(files), default_branch)
+            # If the requested branch differs (e.g. user wants "main" but
+            # account default is "master"), create it from the auto-init SHA.
+            if work_branch != default_branch:
+                init_sha = repo.get_branch(work_branch).commit.sha
+                httpx.post(
+                    f"https://api.github.com/repos/{owner_login}/{repo_name}/git/refs",
+                    headers={
+                        "Authorization":        f"Bearer {self._token}",
+                        "Accept":               "application/vnd.github.v3+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"ref": f"refs/heads/{default_branch}", "sha": init_sha},
+                    timeout=15,
+                )
+                work_branch = default_branch
+
+            rest_headers = {
+                "Authorization":        f"Bearer {self._token}",
+                "Accept":               "application/vnd.github.v3+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+
+            for path, content in sorted(files.items()):
+                encoded = base64.b64encode(
+                    content.encode("utf-8") if isinstance(content, str) else content
+                ).decode("utf-8")
+
+                file_url = f"https://api.github.com/repos/{owner_login}/{repo_name}/contents/{path}"
+
+                # Check if file already exists (README.md from auto_init needs its SHA)
+                check = httpx.get(file_url, headers=rest_headers,
+                                   params={"ref": work_branch}, timeout=15)
+                payload: dict = {
+                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                    "content": encoded,
+                    "branch":  work_branch,
+                }
+                if check.status_code == 200:
+                    payload["sha"] = check.json()["sha"]
+
+                resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
+                resp.raise_for_status()
+                logger.debug("GitHub: uploaded '%s'", path)
+
+            # Remove the auto-generated README if the scaffold doesn't include one
+            if "README.md" not in files:
+                readme_url = f"https://api.github.com/repos/{owner_login}/{repo_name}/contents/README.md"
+                check_readme = httpx.get(readme_url, headers=rest_headers,
+                                          params={"ref": work_branch}, timeout=15)
+                if check_readme.status_code == 200:
+                    httpx.delete(readme_url, headers=rest_headers, json={
+                        "message": "chore: remove auto-generated readme",
+                        "sha":     check_readme.json()["sha"],
+                        "branch":  work_branch,
+                    }, timeout=15)
+
+            logger.info("GitHub: uploaded %d files to '%s'", len(files), work_branch)
 
         return {
             "project_id":     str(repo.id),
