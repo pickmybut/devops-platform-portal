@@ -181,12 +181,16 @@ class GitHubService(BasePlatformService):
                 latest_sha    = repo.get_branch(work_branch).commit.sha
                 latest_commit = repo.get_git_commit(latest_sha)
 
-                tree_elements: List[InputGitTreeElement] = []
-                for path, content in workflow_files.items():
-                    blob = repo.create_git_blob(content, "utf-8")
-                    tree_elements.append(
-                        InputGitTreeElement(path, "100644", "blob", sha=blob.sha)
+                # Use content= (not sha=) so GitHub creates the blob atomically
+                # inside the tree operation — no separate blob creation, no
+                # replication race condition.
+                tree_elements: List[InputGitTreeElement] = [
+                    InputGitTreeElement(
+                        path, "100644", "blob",
+                        content=content if isinstance(content, str) else content.decode("utf-8"),
                     )
+                    for path, content in workflow_files.items()
+                ]
 
                 tree = repo.create_git_tree(tree_elements, latest_commit.tree)
                 commit = repo.create_git_commit(
