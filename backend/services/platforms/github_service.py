@@ -107,11 +107,9 @@ class GitHubService(BasePlatformService):
                 pass
 
         # ── Upload all files via direct REST calls (httpx) ────────────────────
-        # GitHub's Git Data API (/git/trees) takes longer to initialize than
-        # repo metadata. Retry with backoff until it's ready.
-        # Uses content= mode: GitHub creates all blobs atomically inside the
-        # tree — no separate blob creation, no cross-server replication race.
-        # Orphan commit + force-update replaces the auto-init README cleanly.
+        # GitHub's Git Data API (/git/trees) takes 1-2 minutes to initialise
+        # after repo creation — unless you "wake it up" by creating a blob first.
+        # Creating one primer blob forces the git DB to initialise in ~2-3 seconds.
 
         api_headers = {
             "Authorization":        f"Bearer {self._token}",
@@ -120,6 +118,21 @@ class GitHubService(BasePlatformService):
         }
         base = f"https://api.github.com/repos/{namespace_id}/{name}"
 
+        # ── Primer blob: forces git DB initialisation ─────────────────────────
+        primer_path, primer_content = next(iter(files.items()))
+        try:
+            repo.create_git_blob(
+                primer_content if isinstance(primer_content, str)
+                else primer_content.decode("utf-8"),
+                "utf-8",
+            )
+            logger.info("GitHub: git DB initialised (primer blob created)")
+            time.sleep(2)
+        except GithubException as exc:
+            logger.warning("GitHub: primer blob failed (%s) — waiting 5s", exc)
+            time.sleep(5)
+
+        # ── Tree + commit + ref (3 API calls for all files) ───────────────────
         tree_payload = {
             "tree": [
                 {
@@ -133,30 +146,20 @@ class GitHubService(BasePlatformService):
             ]
         }
 
-        # Retry tree creation — Git Data API initialises a few seconds after
-        # repo creation; 404s are expected until it's ready.
-        tree_sha = None
-        for wait_s in [3, 5, 8, 12, 18]:
-            time.sleep(wait_s)
+        for attempt in range(3):
             tree_resp = httpx.post(
                 f"{base}/git/trees", headers=api_headers,
                 json=tree_payload, timeout=120,
             )
             if tree_resp.is_success:
-                tree_sha = tree_resp.json()["sha"]
                 break
-            if tree_resp.status_code == 404:
-                logger.warning(
-                    "GitHub: git/trees not ready (attempt took %ds), retrying…", wait_s,
-                )
+            if tree_resp.status_code == 404 and attempt < 2:
+                logger.warning("GitHub: git/trees not ready yet (attempt %d/3) — waiting 3s", attempt + 1)
+                time.sleep(3)
             else:
                 tree_resp.raise_for_status()
-
-        if tree_sha is None:
-            raise RuntimeError(
-                "GitHub git database not ready after multiple retries. "
-                "Try again in a few seconds."
-            )
+        tree_resp.raise_for_status()
+        tree_sha = tree_resp.json()["sha"]
 
         commit_resp = httpx.post(
             f"{base}/git/commits", headers=api_headers,
