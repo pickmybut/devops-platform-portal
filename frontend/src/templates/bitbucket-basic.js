@@ -7,9 +7,19 @@
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
  *   projectTypeConfig — version + database choices
+ *   features        — additional features to inject
  */
 
-function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig }) {
+import {
+  parseFeatureFlags,
+  bitbucketSecurityStepDefs,
+  bitbucketDefaultFeatureSteps,
+  bitbucketMainFeatureSteps,
+  bitbucketSlackMainStep,
+  featureRequirementsComment,
+} from './feature-snippets.js';
+
+function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig, features = [] }) {
   const ptId   = projectType?.id ?? null;
   const iacId  = iac?.id         ?? 'none';
   const infraId= infra?.id       ?? 'none';
@@ -54,6 +64,9 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const isEc2         = infraId === 'ec2';
   const needsDocker   = isEcs || isEks || isK8sEc2;
   const hasInfraArch  = infraId !== 'none';
+
+  // ── Feature flags ─────────────────────────────────────────────────────────
+  const feat = parseFeatureFlags(features, needsDocker);
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -731,6 +744,10 @@ ${pulumiInstall}
           - k6 run tests/load-test.js --vus 10 --duration 60s --env TARGET_URL=$STAGING_URL || true`
   );
 
+  // ── Feature: security / quality step definitions ──────────────────────────
+  const secDefs = bitbucketSecurityStepDefs(feat);
+  if (secDefs) parts.push(secDefs);
+
   // ══════════════════════════════════════════════════════════════════════════
   // PIPELINES
   // ══════════════════════════════════════════════════════════════════════════
@@ -780,6 +797,10 @@ pipelines:`);
         script:
           - echo "No test or IaC steps configured — select a Project Type or IaC tool."`);
   }
+
+  // Feature steps in default pipeline (security scans on all branches)
+  const defFeatureSteps = bitbucketDefaultFeatureSteps(feat);
+  if (defFeatureSteps) parts.push(defFeatureSteps);
 
   // ══════════════════════════════════════════════════════════════════════════
   // MAIN BRANCH PIPELINE
@@ -951,6 +972,13 @@ pipelines:`);
           script:
             - echo "No deployment steps configured — select an IaC tool or Infrastructure target."`);
   }
+
+  // Feature steps in main branch pipeline (security scans + Slack at end)
+  const mainFeatureSteps = bitbucketMainFeatureSteps(feat);
+  if (mainFeatureSteps) parts.push(mainFeatureSteps);
+
+  const slackStep = bitbucketSlackMainStep(feat);
+  if (slackStep) parts.push(slackStep);
 
   // ══════════════════════════════════════════════════════════════════════════
   // CUSTOM PIPELINES (manual triggers)

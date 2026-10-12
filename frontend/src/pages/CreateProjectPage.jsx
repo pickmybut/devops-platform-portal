@@ -917,8 +917,9 @@ const CreateProjectPage = () => {
       iac:               form.iac,                // drives IaC deploy stage
       infra:             form.infra,              // drives architecture-specific deploy jobs
       projectTypeConfig: form.projectTypeConfig,  // drives image versions + db service
+      features:          form.features,           // drives additional feature injection
     });
-  }, [cicdTemplateDef, form.repoName, form.projectType, form.iac, form.infra, form.projectTypeConfig]);
+  }, [cicdTemplateDef, form.repoName, form.projectType, form.iac, form.infra, form.projectTypeConfig, form.features]);
 
   const validate = () => {
     const e = {};

@@ -5,7 +5,16 @@
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
  *   projectTypeConfig — version + database choices
+ *   features        — additional features to inject (security, Slack, etc.)
  */
+
+import {
+  parseFeatureFlags,
+  gitlabFeatureIncludes,
+  gitlabSecurityJobs,
+  gitlabSlackJobs,
+  featureRequirementsComment,
+} from './feature-snippets.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared rule snippets (inlined per-job — no multi-merge-key issues)
@@ -64,7 +73,7 @@ const RULES_MAIN_MANUAL = `  rules:
 // Generator
 // ─────────────────────────────────────────────────────────────────────────────
 
-function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig }) {
+function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig, features = [] }) {
   const ptId   = projectType?.id ?? null;
   const iacId  = iac?.id         ?? 'none';
   const infraId= infra?.id       ?? 'none';
@@ -109,6 +118,9 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const needsDocker   = isEcs || isEks || isAppRunner; // these require Docker build + ECR push
   const hasInfraArch  = infraId !== 'none';
 
+  // ── Feature flags ─────────────────────────────────────────────────────────
+  const feat = parseFeatureFlags(features, needsDocker);
+
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
   const javaVer    = cfg.javaVersion    ?? '21';
@@ -147,6 +159,10 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
 
   const parts = [];
 
+  // ── Feature includes (GitLab SAST / Dependency-Scanning templates) ───────
+  const featureIncludes = gitlabFeatureIncludes(feat);
+  if (featureIncludes) parts.push(featureIncludes);
+
   // ── Header ──────────────────────────────────────────────────────────────
   parts.push(
 `# ──────────────────────────────────────────────────────────────────────────────
@@ -161,7 +177,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
 #   AWS_ACCESS_KEY_ID       IAM access key
 #   AWS_SECRET_ACCESS_KEY   IAM secret key
 #   CDK_DEFAULT_ACCOUNT     AWS account ID
-#   CDK_DEFAULT_REGION      e.g. eu-west-2` : ' (none beyond standard GitLab vars)'}
+#   CDK_DEFAULT_REGION      e.g. eu-west-2` : ' (none beyond standard GitLab vars)'}${featureRequirementsComment(feat, 'gitlab')}
 # ──────────────────────────────────────────────────────────────────────────────`
   );
 
@@ -966,6 +982,14 @@ ${pulumiInstall}
     );
   }
 
+  // ── Feature: security + quality jobs ────────────────────────────────────
+  const secJobs = gitlabSecurityJobs(feat);
+  if (secJobs) parts.push(secJobs);
+
+  // ── Feature: Slack notifications (.post stage) ───────────────────────────
+  const slackJobs = gitlabSlackJobs(feat, projectName);
+  if (slackJobs) parts.push(slackJobs);
+
   return parts.join('\n\n');
 }
 
@@ -981,11 +1005,12 @@ export function buildBasicPipelineFiles({
   iac            = null,
   infra          = null,
   projectTypeConfig = {},
+  features       = [],
 }) {
   return [
     {
       path: '.gitlab-ci.yml',
-      content: generate({ projectName, appName, projectType, iac, infra, projectTypeConfig }),
+      content: generate({ projectName, appName, projectType, iac, infra, projectTypeConfig, features }),
     },
   ];
 }

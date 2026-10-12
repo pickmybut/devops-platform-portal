@@ -13,13 +13,20 @@
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
  *   projectTypeConfig — version + database choices
+ *   features        — additional features to inject
  */
+
+import {
+  parseFeatureFlags,
+  codepipelineSecurityBuildCmds,
+  codepipelineSlackPostBuild,
+} from './feature-snippets.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BUILDSPEC — Test & Build
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function generateBuildspec({ projectName, appName, projectType, iac, infra, projectTypeConfig }) {
+function generateBuildspec({ projectName, appName, projectType, iac, infra, projectTypeConfig, features = [] }) {
   const ptId   = projectType?.id ?? null;
   const iacId  = iac?.id         ?? 'none';
   const infraId= infra?.id       ?? 'none';
@@ -51,6 +58,9 @@ function generateBuildspec({ projectName, appName, projectType, iac, infra, proj
   const isLambdaInfra = infraId === 'lambda';
   const isS3Cf        = infraId === 's3-cloudfront';
   const needsDocker   = isEcs;
+
+  // ── Feature flags ─────────────────────────────────────────────────────────
+  const feat = parseFeatureFlags(features, needsDocker);
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -227,14 +237,14 @@ ${preBuildCmds.join('\n')}`
   parts.push(
 `  build:
     commands:
-${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}`
+${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}${codepipelineSecurityBuildCmds(feat) ? '\n' + codepipelineSecurityBuildCmds(feat) : ''}`
   );
 
   // ── Post-build phase ────────────────────────────────────────────────────
   parts.push(
 `  post_build:
     commands:
-      - echo "Build completed on $(date)"`
+      - echo "Build completed on $(date)"${codepipelineSlackPostBuild(feat, projectName)}`
   );
 
   // ── Artifacts ───────────────────────────────────────────────────────────

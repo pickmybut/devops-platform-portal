@@ -7,9 +7,17 @@
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
  *   projectTypeConfig — version + database choices
+ *   features        — additional features to inject
  */
 
-function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig }) {
+import {
+  parseFeatureFlags,
+  githubSecurityJobs,
+  githubSlackJob,
+  featureRequirementsComment,
+} from './feature-snippets.js';
+
+function generate({ projectName, appName, projectType, iac, infra, projectTypeConfig, features = [] }) {
   const ptId   = projectType?.id ?? null;
   const iacId  = iac?.id         ?? 'none';
   const infraId= infra?.id       ?? 'none';
@@ -53,6 +61,9 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const isEc2         = infraId === 'ec2';
   const needsDocker   = isEcs || isEks;
   const hasInfraArch  = infraId !== 'none';
+
+  // ── Feature flags ─────────────────────────────────────────────────────────
+  const feat = parseFeatureFlags(features, needsDocker);
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -1487,6 +1498,14 @@ ${pulumiSetup}
           PULUMI_ACCESS_TOKEN: \${{ secrets.PULUMI_ACCESS_TOKEN }}`
     );
   }
+
+  // ── Feature: security / quality / docker-lint jobs ───────────────────────
+  const secJobs = githubSecurityJobs(feat);
+  if (secJobs) parts.push(secJobs);
+
+  // ── Feature: Slack notification job (last, needs deploy-production) ──────
+  const slackJob = githubSlackJob(feat, projectName);
+  if (slackJob) parts.push(slackJob);
 
   return parts.join('\n');
 }
