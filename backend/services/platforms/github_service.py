@@ -127,10 +127,10 @@ class GitHubService(BasePlatformService):
                 "utf-8",
             )
             logger.info("GitHub: git DB initialised (primer blob created)")
-            time.sleep(2)
+            time.sleep(5)   # 5s gives the git tree server time to mount
         except GithubException as exc:
-            logger.warning("GitHub: primer blob failed (%s) — waiting 5s", exc)
-            time.sleep(5)
+            logger.warning("GitHub: primer blob failed (%s) — waiting 8s", exc)
+            time.sleep(8)
 
         # ── Tree + commit + ref (3 API calls for all files) ───────────────────
         tree_payload = {
@@ -146,16 +146,16 @@ class GitHubService(BasePlatformService):
             ]
         }
 
-        for attempt in range(3):
+        for attempt in range(6):   # up to 6 × 5s = 30s extra
             tree_resp = httpx.post(
                 f"{base}/git/trees", headers=api_headers,
                 json=tree_payload, timeout=120,
             )
             if tree_resp.is_success:
                 break
-            if tree_resp.status_code == 404 and attempt < 2:
-                logger.warning("GitHub: git/trees not ready yet (attempt %d/3) — waiting 3s", attempt + 1)
-                time.sleep(3)
+            if tree_resp.status_code == 404 and attempt < 5:
+                logger.warning("GitHub: git/trees not ready yet (attempt %d/6) — waiting 5s", attempt + 1)
+                time.sleep(5)
             else:
                 tree_resp.raise_for_status()
         tree_resp.raise_for_status()
