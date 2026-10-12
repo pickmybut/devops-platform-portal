@@ -22,7 +22,7 @@ import time
 from typing import Dict, List
 
 import httpx
-from github import Github, GithubException, InputGitTreeElement
+from github import Github, GithubException
 
 from .base import BasePlatformService
 
