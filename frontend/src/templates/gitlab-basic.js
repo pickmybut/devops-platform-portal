@@ -77,12 +77,12 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const isServerless  = ptId === 'serverless';
   const isCdkStack    = ptId === 'cdk-stack';
   const isPythonApp   = isDjango || isFastApi;
-  const isPython      = isPythonApp || isLambdaPy || isServerless || isCdkStack || ptId === 'api-gateway';
+  const isPython      = isPythonApp || isLambdaPy || isServerless || ptId === 'api-gateway';
   const isJava        = ptId === 'java-spring' || ptId === 'java-lambda';
   const isMfe         = ptId === 'react-mfe' || ptId === 'react-shell';
   const isNodeApi     = ptId === 'nodejs-api';
   const isNodeLambda  = ptId === 'nodejs-lambda';
-  const isNode        = isMfe || isNodeApi || isNodeLambda;
+  const isNode        = isMfe || isNodeApi || isNodeLambda || isCdkStack;
   const isDotnet      = ptId === 'dotnet-api';
 
   // ── IaC flags ───────────────────────────────────────────────────────────

@@ -20,29 +20,39 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const isFastApi     = ptId === 'fastapi';
   const isLambdaPy    = ptId === 'python-lambda';
   const isServerless  = ptId === 'serverless';
+  const isApiGateway  = ptId === 'api-gateway';
+  const isCdkStack    = ptId === 'cdk-stack';
   const isPythonApp   = isDjango || isFastApi;
-  const isPython      = isPythonApp || isLambdaPy || isServerless;
+  const isPython      = isPythonApp || isLambdaPy || isServerless || isApiGateway;
   const isJava        = ptId === 'java-spring' || ptId === 'java-lambda';
   const isMfe         = ptId === 'react-mfe' || ptId === 'react-shell';
   const isNodeApi     = ptId === 'nodejs-api';
   const isNodeLambda  = ptId === 'nodejs-lambda';
-  const isNode        = isMfe || isNodeApi || isNodeLambda;
+  const isNode        = isMfe || isNodeApi || isNodeLambda || isCdkStack;
   const isDotnet      = ptId === 'dotnet-api';
 
   // ── IaC flags ───────────────────────────────────────────────────────────
   const hasPyCdk    = iacId === 'python-cdk';
   const hasTsCdk    = iacId === 'typescript-cdk';
   const hasCsharpCdk= iacId === 'csharp-cdk';
-  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk;
+  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk || isCdkStack;
   const hasTf       = iacId === 'terraform';
+  const hasCfn      = iacId === 'cloudformation';
   const hasSam      = iacId === 'sam';
+  const hasPulumiPy = iacId === 'pulumi-python';
+  const hasPulumiTs = iacId === 'pulumi-ts';
   const hasIac      = iacId !== 'none';
 
   // ── Infra architecture flags ─────────────────────────────────────────────
-  const isEcs         = infraId === 'ecs-fargate' || infraId === 'ecs-ec2';
+  const isEcsFargate  = infraId === 'ecs-fargate';
+  const isEcsEc2      = infraId === 'ecs-ec2';
+  const isEcs         = isEcsFargate || isEcsEc2;
+  const isEks         = infraId === 'eks';
+  const isK8sEc2      = infraId === 'k8s-ec2';
   const isLambdaInfra = infraId === 'lambda';
   const isS3Cf        = infraId === 's3-cloudfront';
-  const needsDocker   = isEcs;
+  const isEc2         = infraId === 'ec2';
+  const needsDocker   = isEcs || isEks || isK8sEc2;
   const hasInfraArch  = infraId !== 'none';
 
   // ── Config values ───────────────────────────────────────────────────────
@@ -75,7 +85,15 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
 #   ECS_CLUSTER_STAGING      — ECS cluster name for staging
 #   ECS_SERVICE_STAGING      — ECS service name for staging
 #   ECS_CLUSTER_PROD         — ECS cluster name for production
-#   ECS_SERVICE_PROD         — ECS service name for production` : ''}${isS3Cf ? `
+#   ECS_SERVICE_PROD         — ECS service name for production` : ''}${isEks ? `
+#   EKS_CLUSTER_NAME         — EKS cluster name
+#   K8S_NAMESPACE            — Kubernetes namespace (default: default)` : ''}${isK8sEc2 ? `
+#   K8S_NAMESPACE            — Kubernetes namespace
+#   KUBE_CONFIG              — Base64-encoded kubeconfig` : ''}${isEc2 ? `
+#   CODEDEPLOY_APP           — CodeDeploy application name
+#   CODEDEPLOY_GROUP_STAGING — CodeDeploy deployment group for staging
+#   CODEDEPLOY_GROUP_PROD    — CodeDeploy deployment group for production
+#   S3_ARTIFACT_BUCKET       — S3 bucket for deployment artifacts` : ''}${isS3Cf ? `
 #   S3_BUCKET_STAGING        — S3 bucket for staging
 #   S3_BUCKET_PROD           — S3 bucket for production
 #   CLOUDFRONT_DIST_STAGING  — CloudFront distribution ID for staging
@@ -407,6 +425,120 @@ ${cdkInstall}
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  // EKS DEPLOY STEP DEFINITIONS (when no IaC)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isEks && !hasCdk && !hasTf) {
+    parts.push(
+`
+    - step: &eks-deploy-staging
+        name: Deploy to EKS (Staging)
+        image: amazon/aws-cli:latest
+        deployment: staging
+        script:
+          - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+          - export IMAGE_TAG=$BITBUCKET_COMMIT
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - helm upgrade --install ${appName}-staging ./helm/${appName}
+              --namespace \${K8S_NAMESPACE:-default}
+              --set image.repository=$ECR_REGISTRY/${appName}
+              --set image.tag=$IMAGE_TAG
+              --set environment=staging
+              --wait --timeout 5m
+
+    - step: &eks-deploy-production
+        name: Deploy to EKS (Production)
+        image: amazon/aws-cli:latest
+        deployment: production
+        trigger: manual
+        script:
+          - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+          - export IMAGE_TAG=$BITBUCKET_COMMIT
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - helm upgrade --install ${appName}-production ./helm/${appName}
+              --namespace \${K8S_NAMESPACE:-production}
+              --set image.repository=$ECR_REGISTRY/${appName}
+              --set image.tag=$IMAGE_TAG
+              --set environment=production
+              --wait --timeout 5m`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // K8S-EC2 DEPLOY STEP DEFINITIONS (when no IaC)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isK8sEc2 && !hasCdk && !hasTf) {
+    parts.push(
+`
+    - step: &k8s-deploy-staging
+        name: Deploy to K8s/EC2 (Staging)
+        image: bitnami/kubectl:latest
+        deployment: staging
+        script:
+          - echo $KUBE_CONFIG | base64 -d > /tmp/kubeconfig
+          - export KUBECONFIG=/tmp/kubeconfig
+          - export IMAGE_TAG=$BITBUCKET_COMMIT
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - sed -i "s|IMAGE_PLACEHOLDER|$ECR_REGISTRY/${appName}:$IMAGE_TAG|g" k8s/staging/*.yaml
+          - kubectl apply -f k8s/staging/ --namespace \${K8S_NAMESPACE:-default}
+          - kubectl rollout status deployment/${appName} --namespace \${K8S_NAMESPACE:-default} --timeout=5m
+
+    - step: &k8s-deploy-production
+        name: Deploy to K8s/EC2 (Production)
+        image: bitnami/kubectl:latest
+        deployment: production
+        trigger: manual
+        script:
+          - echo $KUBE_CONFIG | base64 -d > /tmp/kubeconfig
+          - export KUBECONFIG=/tmp/kubeconfig
+          - export IMAGE_TAG=$BITBUCKET_COMMIT
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - sed -i "s|IMAGE_PLACEHOLDER|$ECR_REGISTRY/${appName}:$IMAGE_TAG|g" k8s/production/*.yaml
+          - kubectl apply -f k8s/production/ --namespace \${K8S_NAMESPACE:-production}
+          - kubectl rollout status deployment/${appName} --namespace \${K8S_NAMESPACE:-production} --timeout=5m`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // EC2 CODEDEPLOY STEP DEFINITIONS (when no IaC)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isEc2 && !hasCdk && !hasTf) {
+    parts.push(
+`
+    - step: &ec2-deploy-staging
+        name: Deploy to EC2 (Staging)
+        deployment: staging
+        script:
+          - zip -r deploy.zip . -x "*.git*" "node_modules/.cache/*" "__pycache__/*"
+          - aws s3 cp deploy.zip s3://$S3_ARTIFACT_BUCKET/${projectName}/staging/$BITBUCKET_COMMIT.zip
+          - aws deploy create-deployment
+              --application-name $CODEDEPLOY_APP
+              --deployment-group-name $CODEDEPLOY_GROUP_STAGING
+              --s3-location bucket=$S3_ARTIFACT_BUCKET,key=${projectName}/staging/$BITBUCKET_COMMIT.zip,bundleType=zip
+              --file-exists-behavior OVERWRITE
+          - aws deploy wait deployment-successful --deployment-id $(aws deploy list-deployments
+              --application-name $CODEDEPLOY_APP
+              --deployment-group-name $CODEDEPLOY_GROUP_STAGING
+              --query 'deployments[0]' --output text)
+
+    - step: &ec2-deploy-production
+        name: Deploy to EC2 (Production)
+        deployment: production
+        trigger: manual
+        script:
+          - zip -r deploy.zip . -x "*.git*" "node_modules/.cache/*" "__pycache__/*"
+          - aws s3 cp deploy.zip s3://$S3_ARTIFACT_BUCKET/${projectName}/production/$BITBUCKET_COMMIT.zip
+          - aws deploy create-deployment
+              --application-name $CODEDEPLOY_APP
+              --deployment-group-name $CODEDEPLOY_GROUP_PROD
+              --s3-location bucket=$S3_ARTIFACT_BUCKET,key=${projectName}/production/$BITBUCKET_COMMIT.zip,bundleType=zip
+              --file-exists-behavior OVERWRITE`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // S3 + CLOUDFRONT STEP DEFINITIONS
   // ══════════════════════════════════════════════════════════════════════════
 
@@ -507,6 +639,88 @@ ${pkgScript}
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // CLOUDFORMATION STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasCfn) {
+    parts.push(
+`
+    - step: &cfn-deploy-staging
+        name: CloudFormation Deploy (Staging)
+        image: amazon/aws-cli:latest
+        deployment: staging
+        script:
+          - aws cloudformation deploy
+              --template-file devops/cloudformation/template.yaml
+              --stack-name ${projectName}-staging
+              --parameter-overrides Environment=staging
+              --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+              --no-fail-on-empty-changeset
+          - aws cloudformation wait stack-update-complete --stack-name ${projectName}-staging || true
+
+    - step: &cfn-deploy-production
+        name: CloudFormation Deploy (Production)
+        image: amazon/aws-cli:latest
+        deployment: production
+        trigger: manual
+        script:
+          - aws cloudformation deploy
+              --template-file devops/cloudformation/template.yaml
+              --stack-name ${projectName}-production
+              --parameter-overrides Environment=production
+              --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+              --no-fail-on-empty-changeset
+          - aws cloudformation wait stack-update-complete --stack-name ${projectName}-production || true`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PULUMI STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasPulumiPy || hasPulumiTs) {
+    const pulumiImage = hasPulumiTs ? `node:20-slim` : `python:${pythonVer}-slim`;
+    const pulumiInstall = hasPulumiTs
+      ? `          - npm install -g pulumi
+          - cd devops/pulumi && npm ci`
+      : `          - pip install pulumi pulumi-aws
+          - cd devops/pulumi && pip install -r requirements.txt`;
+
+    parts.push(
+`
+    - step: &pulumi-preview
+        name: Pulumi Preview
+        image: ${pulumiImage}
+        script:
+          - curl -fsSL https://get.pulumi.com | sh
+          - export PATH=$PATH:~/.pulumi/bin
+${pulumiInstall}
+          - pulumi preview --stack staging
+
+    - step: &pulumi-up-staging
+        name: Pulumi Up (Staging)
+        image: ${pulumiImage}
+        deployment: staging
+        script:
+          - curl -fsSL https://get.pulumi.com | sh
+          - export PATH=$PATH:~/.pulumi/bin
+${pulumiInstall}
+          - pulumi up --yes --stack staging
+
+    - step: &pulumi-up-production
+        name: Pulumi Up (Production)
+        image: ${pulumiImage}
+        deployment: production
+        trigger: manual
+        script:
+          - curl -fsSL https://get.pulumi.com | sh
+          - export PATH=$PATH:~/.pulumi/bin
+${pulumiInstall}
+          - pulumi up --yes --stack production`
+    );
+  }
+
   // ── Load Test Step Definition ───────────────────────────────────────────
   parts.push(
 `
@@ -546,6 +760,25 @@ pipelines:`);
   }
   if (hasTf) {
     parts.push(`    - step: *terraform-validate`);
+  }
+  if (hasCfn) {
+    // CloudFormation validation via cfn-lint (lightweight check on feature branches)
+    parts.push(`    - step:
+        name: Validate CloudFormation Template
+        image: cfnlint/cfn-python-lint:latest
+        script:
+          - cfn-lint devops/cloudformation/template.yaml || true`);
+  }
+  if (hasPulumiPy || hasPulumiTs) {
+    parts.push(`    - step: *pulumi-preview`);
+  }
+
+  // Fallback: if nothing matched, emit a no-op so the pipeline is valid YAML
+  if (!testStep && !hasCdk && !hasTf && !hasCfn && !(hasPulumiPy || hasPulumiTs)) {
+    parts.push(`    - step:
+        name: Validate
+        script:
+          - echo "No test or IaC steps configured — select a Project Type or IaC tool."`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -590,6 +823,18 @@ pipelines:`);
                 SERVICE_NAME: $ECS_SERVICE_STAGING
                 FORCE_NEW_DEPLOYMENT: 'true'`);
     }
+    if (isEks) {
+      parts.push(`      - step:
+          name: Helm Upgrade Staging
+          image: amazon/aws-cli:latest
+          script:
+            - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+            - helm upgrade --install ${appName}-staging ./helm/${appName}
+                --namespace \${K8S_NAMESPACE:-default}
+                --set environment=staging
+                --set image.tag=$BITBUCKET_COMMIT
+                --wait --timeout 5m`);
+    }
     parts.push(`      - step: *load-test`);
     parts.push(`      - step: *cdk-deploy-production`);
     if (isEcs) {
@@ -605,6 +850,19 @@ pipelines:`);
                 CLUSTER_NAME: $ECS_CLUSTER_PROD
                 SERVICE_NAME: $ECS_SERVICE_PROD
                 FORCE_NEW_DEPLOYMENT: 'true'`);
+    }
+    if (isEks) {
+      parts.push(`      - step:
+          name: Helm Upgrade Production
+          image: amazon/aws-cli:latest
+          deployment: production
+          script:
+            - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+            - helm upgrade --install ${appName}-production ./helm/${appName}
+                --namespace \${K8S_NAMESPACE:-production}
+                --set environment=production
+                --set image.tag=$BITBUCKET_COMMIT
+                --wait --timeout 5m`);
     }
   }
 
@@ -633,6 +891,20 @@ pipelines:`);
     parts.push(`      - step: *ecs-deploy-production`);
   }
 
+  // EKS without IaC
+  if (isEks && !hasCdk && !hasTf) {
+    parts.push(`      - step: *eks-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *eks-deploy-production`);
+  }
+
+  // K8s-EC2 without IaC
+  if (isK8sEc2 && !hasCdk && !hasTf) {
+    parts.push(`      - step: *k8s-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *k8s-deploy-production`);
+  }
+
   // S3 + CloudFront without IaC
   if (isS3Cf && isNode && !hasCdk && !hasTf) {
     parts.push(`      - step: *s3-deploy-staging`);
@@ -646,6 +918,38 @@ pipelines:`);
     parts.push(`      - step: *lambda-deploy-staging`);
     parts.push(`      - step: *load-test`);
     parts.push(`      - step: *lambda-deploy-production`);
+  }
+
+  // EC2 CodeDeploy without IaC
+  if (isEc2 && !hasCdk && !hasTf) {
+    parts.push(`      - step: *ec2-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *ec2-deploy-production`);
+  }
+
+  // CloudFormation IaC
+  if (hasCfn) {
+    parts.push(`      - step: *cfn-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *cfn-deploy-production`);
+  }
+
+  // Pulumi IaC
+  if (hasPulumiPy || hasPulumiTs) {
+    parts.push(`      - step: *pulumi-preview`);
+    parts.push(`      - step: *pulumi-up-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *pulumi-up-production`);
+  }
+
+  // Fallback: ensure main pipeline always has at least one step
+  const hasMainSteps = testStep || needsDocker || hasCdk || hasTf || hasSam || isEcs || isEks ||
+    isK8sEc2 || (isS3Cf && isNode) || isLambdaInfra || isEc2 || hasCfn || hasPulumiPy || hasPulumiTs;
+  if (!hasMainSteps) {
+    parts.push(`      - step:
+          name: No deployment configured
+          script:
+            - echo "No deployment steps configured — select an IaC tool or Infrastructure target."`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════

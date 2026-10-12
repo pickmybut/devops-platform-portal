@@ -20,20 +20,22 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const isFastApi     = ptId === 'fastapi';
   const isLambdaPy    = ptId === 'python-lambda';
   const isServerless  = ptId === 'serverless';
+  const isApiGateway  = ptId === 'api-gateway';
+  const isCdkStack    = ptId === 'cdk-stack';
   const isPythonApp   = isDjango || isFastApi;
-  const isPython      = isPythonApp || isLambdaPy || isServerless;
+  const isPython      = isPythonApp || isLambdaPy || isServerless || isApiGateway;
   const isJava        = ptId === 'java-spring' || ptId === 'java-lambda';
   const isMfe         = ptId === 'react-mfe' || ptId === 'react-shell';
   const isNodeApi     = ptId === 'nodejs-api';
   const isNodeLambda  = ptId === 'nodejs-lambda';
-  const isNode        = isMfe || isNodeApi || isNodeLambda;
+  const isNode        = isMfe || isNodeApi || isNodeLambda || isCdkStack;
   const isDotnet      = ptId === 'dotnet-api';
 
   // ── IaC flags ───────────────────────────────────────────────────────────
   const hasPyCdk    = iacId === 'python-cdk';
   const hasTsCdk    = iacId === 'typescript-cdk';
   const hasCsharpCdk= iacId === 'csharp-cdk';
-  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk;
+  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk || isCdkStack;
   const hasTf       = iacId === 'terraform';
   const hasSam      = iacId === 'sam';
   const hasCfn      = iacId === 'cloudformation';
@@ -1277,6 +1279,212 @@ ${pkgCmd}
             --zip-file fileb://function.zip
           aws lambda wait function-updated \\
             --function-name \${{ vars.LAMBDA_FUNCTION_PROD }}`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CloudFormation Deploy (when hasCfn)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasCfn) {
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # CLOUDFORMATION — Staging & Production
+  # ════════════════════════════════════════════════════════════════════════════
+
+  cfn-staging:
+    name: CloudFormation Deploy Staging
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation Stack (Staging)
+        run: |
+          aws cloudformation deploy \\
+            --template-file devops/cloudformation/template.yaml \\
+            --stack-name ${projectName}-staging \\
+            --parameter-overrides Environment=staging \\
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \\
+            --no-fail-on-empty-changeset
+
+  cfn-production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: cfn-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ CloudFormation production deployment approved"
+
+  cfn-production:
+    name: CloudFormation Deploy Production
+    runs-on: ubuntu-latest
+    needs: cfn-production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation Stack (Production)
+        run: |
+          aws cloudformation deploy \\
+            --template-file devops/cloudformation/template.yaml \\
+            --stack-name ${projectName}-production \\
+            --parameter-overrides Environment=production \\
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \\
+            --no-fail-on-empty-changeset`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Pulumi Deploy (when hasPulumiPy or hasPulumiTs)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasPulumiPy || hasPulumiTs) {
+    const pulumiSetup = hasPulumiTs
+      ? `      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: devops/pulumi/package-lock.json
+
+      - name: Install Pulumi dependencies
+        run: cd devops/pulumi && npm ci`
+      : `      - uses: actions/setup-python@v5
+        with:
+          python-version: '${cfg.pythonVersion ?? '3.14'}'
+
+      - name: Install Pulumi dependencies
+        run: |
+          pip install pulumi pulumi-aws
+          cd devops/pulumi && pip install -r requirements.txt`;
+
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # PULUMI — Preview on PR, Up on main
+  # ════════════════════════════════════════════════════════════════════════════
+
+  pulumi-preview:
+    name: Pulumi Preview
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+${pulumiSetup}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Pulumi Preview
+        uses: pulumi/actions@v5
+        with:
+          command: preview
+          stack-name: staging
+          work-dir: devops/pulumi
+        env:
+          PULUMI_ACCESS_TOKEN: \${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+  pulumi-staging:
+    name: Pulumi Up (Staging)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
+    steps:
+      - uses: actions/checkout@v4
+
+${pulumiSetup}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Pulumi Up (Staging)
+        uses: pulumi/actions@v5
+        with:
+          command: up
+          stack-name: staging
+          work-dir: devops/pulumi
+        env:
+          PULUMI_ACCESS_TOKEN: \${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+  pulumi-production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: pulumi-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ Pulumi production deployment approved"
+
+  pulumi-production:
+    name: Pulumi Up (Production)
+    runs-on: ubuntu-latest
+    needs: pulumi-production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+${pulumiSetup}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Pulumi Up (Production)
+        uses: pulumi/actions@v5
+        with:
+          command: up
+          stack-name: production
+          work-dir: devops/pulumi
+        env:
+          PULUMI_ACCESS_TOKEN: \${{ secrets.PULUMI_ACCESS_TOKEN }}`
     );
   }
 

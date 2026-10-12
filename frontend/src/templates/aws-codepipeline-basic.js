@@ -30,17 +30,19 @@ function generateBuildspec({ projectName, appName, projectType, iac, infra, proj
   const isFastApi     = ptId === 'fastapi';
   const isLambdaPy    = ptId === 'python-lambda';
   const isServerless  = ptId === 'serverless';
+  const isApiGateway  = ptId === 'api-gateway';
+  const isCdkStack    = ptId === 'cdk-stack';
   const isPythonApp   = isDjango || isFastApi;
-  const isPython      = isPythonApp || isLambdaPy || isServerless;
+  const isPython      = isPythonApp || isLambdaPy || isServerless || isApiGateway;
   const isJava        = ptId === 'java-spring' || ptId === 'java-lambda';
   const isMfe         = ptId === 'react-mfe' || ptId === 'react-shell';
   const isNodeApi     = ptId === 'nodejs-api';
   const isNodeLambda  = ptId === 'nodejs-lambda';
-  const isNode        = isMfe || isNodeApi || isNodeLambda;
+  const isNode        = isMfe || isNodeApi || isNodeLambda || isCdkStack;
   const isDotnet      = ptId === 'dotnet-api';
 
   // ── IaC flags ───────────────────────────────────────────────────────────
-  const hasCdk      = iacId === 'python-cdk' || iacId === 'typescript-cdk' || iacId === 'csharp-cdk';
+  const hasCdk      = iacId === 'python-cdk' || iacId === 'typescript-cdk' || iacId === 'csharp-cdk' || isCdkStack;
   const hasTf       = iacId === 'terraform';
   const hasSam      = iacId === 'sam';
 
@@ -118,9 +120,9 @@ phases:`);
   parts.push(
 `  install:
     runtime-versions:
-${runtimeVersions.join('\n')}
+${runtimeVersions.length > 0 ? runtimeVersions.join('\n') : '      nodejs: 20'}
     commands:
-${installCmds.join('\n')}`
+${installCmds.length > 0 ? installCmds.join('\n') : '      - echo "No runtime setup required"'}`
   );
 
   // ── Pre-build phase ─────────────────────────────────────────────────────
@@ -225,7 +227,7 @@ ${preBuildCmds.join('\n')}`
   parts.push(
 `  build:
     commands:
-${buildCmds.join('\n')}`
+${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}`
   );
 
   // ── Post-build phase ────────────────────────────────────────────────────
