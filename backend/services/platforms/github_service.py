@@ -15,7 +15,7 @@ import os
 from typing import Dict, List
 
 import httpx
-from github import Github, GithubException
+from github import Github, GithubException, InputGitTreeElement
 
 from .base import BasePlatformService
 
