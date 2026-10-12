@@ -16,7 +16,6 @@ import {
   CICD_OPTIONS,
   ADDITIONAL_FEATURES,
 } from '../data/templateCategories';
-import { NAMESPACES as FALLBACK_NAMESPACES } from '../data/mockData';
 import ResizableLayout from '../components/ResizableLayout';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/;
@@ -829,12 +828,12 @@ const CreateProjectPage = () => {
   const [createError, setCreateError] = useState(null);
 
   // ── Dynamic namespaces — reload whenever platform changes ─────────────────
-  const [NAMESPACES, setNAMESPACES] = useState(FALLBACK_NAMESPACES);
+  const [NAMESPACES, setNAMESPACES] = useState([]);
   const [namespacesLoading, setNamespacesLoading] = useState(false);
 
   useEffect(() => {
     if (!form.platform?.id) {
-      setNAMESPACES(FALLBACK_NAMESPACES);
+      setNAMESPACES([]);
       return;
     }
     // Reset the selected namespace whenever platform switches
@@ -851,7 +850,7 @@ const CreateProjectPage = () => {
           }))
         )
       )
-      .catch(() => setNAMESPACES(FALLBACK_NAMESPACES))
+      .catch(() => setNAMESPACES([]))
       .finally(() => setNamespacesLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.platform?.id]);

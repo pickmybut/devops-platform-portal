@@ -1,11 +1,3 @@
-export const NAMESPACES = [
-  { id: 1, label: 'innovation',                 value: 'innovation' },
-  { id: 2, label: 'innovation / velocity',       value: 'innovation/velocity' },
-  { id: 3, label: 'innovation / platform',       value: 'innovation/platform' },
-  { id: 4, label: 'radius-engineering',          value: 'radius-engineering' },
-  { id: 5, label: 'radius-engineering / devops', value: 'radius-engineering/devops' },
-];
-
 export const STATS = [
   { label: 'Projects Created', value: 14, sub: '+3 this month' },
   { label: 'Active Pipelines', value: 7,  sub: 'across all projects' },
