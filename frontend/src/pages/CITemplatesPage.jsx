@@ -179,13 +179,35 @@ const CITemplatesPage = () => {
     </div>
   );
 
+  // ── Collapsed Left Panel (Icons only) ───────────────────────────────────────
+  const leftPanelCollapsed = (
+    <div className="flex flex-col items-center gap-2 py-4">
+      {CI_CATEGORIES.map((cat) => (
+        <button
+          key={cat.id}
+          onClick={() => handleCategoryChange(cat.id)}
+          className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+            transition-all ${activeCategory === cat.id 
+              ? 'bg-indigo-600 text-white shadow-sm' 
+              : 'bg-slate-100 hover:bg-slate-200'
+            }`}
+          title={cat.label}
+        >
+          {cat.icon}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <ResizableLayout
       leftPanel={leftPanelContent}
+      leftPanelCollapsed={leftPanelCollapsed}
       rightPanel={rightPanelContent}
       minLeftWidth={400}
       minRightWidth={300}
       defaultRightWidth={450}
+      collapsedLeftWidth={60}
     />
   );
 };

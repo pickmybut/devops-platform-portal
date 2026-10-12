@@ -153,13 +153,53 @@ const DashboardPage = () => {
     </div>
   );
 
+  // ── Collapsed Left Panel (Icons only) ───────────────────────────────────────
+  const leftPanelCollapsed = (
+    <div className="flex flex-col items-center gap-3 py-4">
+      {/* Stats icons */}
+      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-xl"
+        title="Projects">
+        📊
+      </div>
+      
+      {/* Recent projects icon */}
+      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-xl"
+        title="Recent Projects">
+        📁
+      </div>
+      
+      {/* Divider */}
+      <div className="w-6 h-px bg-slate-200 my-1" />
+      
+      {/* Quick action buttons */}
+      <button
+        onClick={() => setCurrentPage('create')}
+        className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-lg
+          hover:bg-indigo-700 transition-colors"
+        title="Create Project"
+      >
+        ✦
+      </button>
+      <button
+        onClick={() => setCurrentPage('ci-templates')}
+        className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-xl
+          hover:bg-slate-200 transition-colors"
+        title="CI Templates"
+      >
+        📄
+      </button>
+    </div>
+  );
+
   return (
     <ResizableLayout
       leftPanel={leftPanelContent}
+      leftPanelCollapsed={leftPanelCollapsed}
       rightPanel={rightPanelContent}
       minLeftWidth={500}
       minRightWidth={260}
       defaultRightWidth={300}
+      collapsedLeftWidth={60}
     />
   );
 };

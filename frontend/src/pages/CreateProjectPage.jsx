@@ -1515,14 +1515,114 @@ const CreateProjectPage = () => {
         </div>
       );
 
+  // ── Collapsed Left Panel (Icons only) ───────────────────────────────────────
+  const leftPanelCollapsed = (
+    <div className="flex flex-col items-center gap-2 py-4">
+      {/* Platform */}
+      <button
+        onClick={() => setActiveSection('platform')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'platform' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title="Platform"
+      >
+        {form.platform?.icon || CATEGORIES[0].icon}
+      </button>
+
+      {/* Project Type */}
+      <button
+        onClick={() => setActiveSection('projectType')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'projectType' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title="Project Type"
+      >
+        {form.projectType?.icon || CATEGORIES[1].icon}
+      </button>
+
+      {/* IaC */}
+      <button
+        onClick={() => setActiveSection('iac')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'iac' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title="Infrastructure as Code"
+      >
+        {form.iac?.icon || CATEGORIES[2].icon}
+      </button>
+
+      {/* Infra */}
+      <button
+        onClick={() => setActiveSection('infra')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'infra' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title="Infrastructure Architecture"
+      >
+        {form.infra?.icon || CATEGORIES[3].icon}
+      </button>
+
+      {/* CI/CD */}
+      <button
+        onClick={() => setActiveSection('cicd')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'cicd' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title="CI/CD Pipeline"
+      >
+        {form.cicd?.icon || CATEGORIES[4].icon}
+      </button>
+
+      {/* Divider */}
+      <div className="w-6 h-px bg-slate-200 my-2" />
+
+      {/* Summary */}
+      <button
+        onClick={() => setActiveSection('summary')}
+        className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl
+          transition-all ${activeSection === 'summary' 
+            ? 'bg-indigo-100 ring-2 ring-indigo-400' 
+            : 'bg-slate-100 hover:bg-slate-200'
+          }`}
+        title={`Summary (${previewFiles.length + iacPreviewFiles.length + cicdPreviewFiles.length} files)`}
+      >
+        📦
+      </button>
+
+      {/* Create button */}
+      <button
+        onClick={handleCreate}
+        disabled={loading}
+        className="w-10 h-10 rounded-xl flex items-center justify-center text-lg
+          bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50
+          transition-all mt-2"
+        title="Create Project"
+      >
+        {loading ? '⏳' : '✦'}
+      </button>
+    </div>
+  );
+
   return (
     <>
       <ResizableLayout
         leftPanel={leftPanelContent}
+        leftPanelCollapsed={leftPanelCollapsed}
         rightPanel={rightPanelContent}
         minLeftWidth={450}
         minRightWidth={320}
         defaultRightWidth={460}
+        collapsedLeftWidth={60}
       />
       <SuccessModal />
     </>
