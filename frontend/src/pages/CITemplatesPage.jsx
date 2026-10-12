@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CI_CATEGORIES, CI_SNIPPETS } from '../data/ciSnippets';
+import ResizableLayout from '../components/ResizableLayout';
 
 // ── Code block ───────────────────────────────────────────────────────────────
 const CodeBlock = ({ code }) => {
@@ -13,9 +14,9 @@ const CodeBlock = ({ code }) => {
   };
 
   return (
-    <div className="relative rounded-xl overflow-hidden border border-slate-700">
+    <div className="relative rounded-xl overflow-hidden border border-slate-700 h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between bg-slate-800 px-4 py-2">
+      <div className="flex items-center justify-between bg-slate-800 px-4 py-2 flex-shrink-0">
         <div className="flex gap-1.5">
           <div className="h-3 w-3 rounded-full bg-red-500/70" />
           <div className="h-3 w-3 rounded-full bg-yellow-400/70" />
@@ -32,9 +33,8 @@ const CodeBlock = ({ code }) => {
 
       {/* Code */}
       <pre
-        className="overflow-x-auto bg-slate-900 p-4 text-[12.5px] leading-relaxed
+        className="flex-1 overflow-auto bg-slate-900 p-4 text-[12.5px] leading-relaxed
           text-slate-200 font-mono"
-        style={{ maxHeight: 400 }}
       >
         {code}
       </pre>
@@ -77,8 +77,9 @@ const CITemplatesPage = () => {
     setActiveSnippet(snippet.id === activeSnippet?.id ? null : snippet);
   };
 
-  return (
-    <div className="flex gap-5 max-w-5xl" style={{ minHeight: 0 }}>
+  // ── Left Panel: Category sidebar + snippet list ─────────────────────────────
+  const leftPanelContent = (
+    <div className="flex gap-5" style={{ minHeight: 0 }}>
       {/* ── Category sidebar ───────────────────────────────────────── */}
       <aside className="w-44 flex-shrink-0">
         <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -112,7 +113,7 @@ const CITemplatesPage = () => {
         </div>
       </aside>
 
-      {/* ── Main panel ─────────────────────────────────────────────── */}
+      {/* ── Main panel: Snippets list ─────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0">
         {/* Category heading */}
         <div className="mb-4">
@@ -122,41 +123,20 @@ const CITemplatesPage = () => {
           </h2>
           <p className="text-[12.5px] text-slate-400 mt-0.5">
             {snippets.length} snippet{snippets.length !== 1 ? 's' : ''} available
+            {activeSnippet && ' — click a snippet to preview'}
           </p>
         </div>
 
-        {/* Two-column: snippet cards + code preview */}
-        <div className={`grid gap-4 ${activeSnippet ? 'grid-cols-2' : 'grid-cols-1'}`}>
-          {/* Snippet list */}
-          <div className="space-y-2">
-            {snippets.map((snippet) => (
-              <SnippetCard
-                key={snippet.id}
-                snippet={snippet}
-                active={activeSnippet?.id === snippet.id}
-                onClick={() => handleSnippetClick(snippet)}
-              />
-            ))}
-          </div>
-
-          {/* Code preview */}
-          {activeSnippet && (
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-[12px] font-semibold text-slate-600">
-                  {activeSnippet.name}
-                </p>
-                <button
-                  onClick={() => setActiveSnippet(null)}
-                  className="text-slate-400 hover:text-slate-600 text-sm"
-                  aria-label="Close preview"
-                >
-                  ✕
-                </button>
-              </div>
-              <CodeBlock code={activeSnippet.code} />
-            </div>
-          )}
+        {/* Snippet list */}
+        <div className="space-y-2">
+          {snippets.map((snippet) => (
+            <SnippetCard
+              key={snippet.id}
+              snippet={snippet}
+              active={activeSnippet?.id === snippet.id}
+              onClick={() => handleSnippetClick(snippet)}
+            />
+          ))}
         </div>
 
         {/* Empty state */}
@@ -167,6 +147,46 @@ const CITemplatesPage = () => {
         )}
       </div>
     </div>
+  );
+
+  // ── Right Panel: Code preview ─────────────────────────────────────────────────
+  const rightPanelContent = activeSnippet ? (
+    <div className="flex flex-col h-full">
+      <div className="mb-2 flex items-center justify-between flex-shrink-0">
+        <p className="text-[12px] font-semibold text-slate-600">
+          {activeSnippet.name}
+        </p>
+        <button
+          onClick={() => setActiveSnippet(null)}
+          className="text-slate-400 hover:text-slate-600 text-sm"
+          aria-label="Close preview"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="flex-1 min-h-0">
+        <CodeBlock code={activeSnippet.code} />
+      </div>
+    </div>
+  ) : (
+    <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl
+      border-2 border-dashed border-slate-200 p-8 text-center">
+      <span className="text-4xl opacity-30">📄</span>
+      <p className="text-[13px] font-semibold text-slate-400">Code Preview</p>
+      <p className="text-[12px] text-slate-400 max-w-[200px] leading-relaxed">
+        Select a snippet from the left to preview its code.
+      </p>
+    </div>
+  );
+
+  return (
+    <ResizableLayout
+      leftPanel={leftPanelContent}
+      rightPanel={rightPanelContent}
+      minLeftWidth={400}
+      minRightWidth={300}
+      defaultRightWidth={450}
+    />
   );
 };
 

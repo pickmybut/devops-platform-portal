@@ -1,5 +1,6 @@
 import useAppStore from '../store/useAppStore';
 import { STATS, RECENT_PROJECTS } from '../data/mockData';
+import ResizableLayout from '../components/ResizableLayout';
 
 // ── Stat card ────────────────────────────────────────────────────────────────
 const StatCard = ({ label, value, sub }) => (
@@ -88,37 +89,78 @@ const UsageChart = () => (
 const DashboardPage = () => {
   const setCurrentPage = useAppStore((s) => s.setCurrentPage);
 
-  return (
-    <div className="max-w-4xl space-y-6">
+  // ── Left Panel: Stats + Recent Projects ─────────────────────────────────────
+  const leftPanelContent = (
+    <div className="space-y-6">
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-4">
         {STATS.map((s) => <StatCard key={s.label} {...s} />)}
       </div>
 
-      {/* Two-column: recent projects + usage chart */}
-      <div className="grid grid-cols-[1fr_260px] gap-4 items-start">
-        {/* Recent projects */}
-        <div>
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              Recently Created
-            </p>
-            <button
-              onClick={() => setCurrentPage('create')}
-              className="text-[12px] font-semibold text-indigo-500 hover:text-indigo-700"
-            >
-              + New Project
-            </button>
-          </div>
-          <div className="space-y-2">
-            {RECENT_PROJECTS.map((p) => <ProjectRow key={p.id} project={p} />)}
-          </div>
+      {/* Recent projects */}
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            Recently Created
+          </p>
+          <button
+            onClick={() => setCurrentPage('create')}
+            className="text-[12px] font-semibold text-indigo-500 hover:text-indigo-700"
+          >
+            + New Project
+          </button>
         </div>
-
-        {/* Usage chart */}
-        <UsageChart />
+        <div className="space-y-2">
+          {RECENT_PROJECTS.map((p) => <ProjectRow key={p.id} project={p} />)}
+        </div>
       </div>
     </div>
+  );
+
+  // ── Right Panel: Usage chart + Quick actions ─────────────────────────────────
+  const rightPanelContent = (
+    <div className="space-y-4">
+      <UsageChart />
+      
+      {/* Quick Actions */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-[13px] font-semibold text-slate-700 mb-3">Quick Actions</p>
+        <div className="space-y-2">
+          <button
+            onClick={() => setCurrentPage('create')}
+            className="w-full flex items-center gap-3 rounded-lg border border-slate-200 
+              px-4 py-3 text-left hover:bg-slate-50 transition-colors"
+          >
+            <span className="text-lg">✦</span>
+            <div>
+              <p className="text-[13px] font-semibold text-slate-700">Create Project</p>
+              <p className="text-[11px] text-slate-400">Scaffold a new repository</p>
+            </div>
+          </button>
+          <button
+            onClick={() => setCurrentPage('ci-templates')}
+            className="w-full flex items-center gap-3 rounded-lg border border-slate-200 
+              px-4 py-3 text-left hover:bg-slate-50 transition-colors"
+          >
+            <span className="text-lg">📄</span>
+            <div>
+              <p className="text-[13px] font-semibold text-slate-700">CI Templates</p>
+              <p className="text-[11px] text-slate-400">Browse pipeline snippets</p>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <ResizableLayout
+      leftPanel={leftPanelContent}
+      rightPanel={rightPanelContent}
+      minLeftWidth={500}
+      minRightWidth={260}
+      defaultRightWidth={300}
+    />
   );
 };
 
