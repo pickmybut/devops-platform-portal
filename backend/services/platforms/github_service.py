@@ -18,8 +18,10 @@ Post-creation:
 
 import logging
 import os
+import time
 from typing import Dict, List
 
+import httpx
 from github import Github, GithubException, InputGitTreeElement
 
 from .base import BasePlatformService
@@ -97,47 +99,76 @@ class GitHubService(BasePlatformService):
         actual_branch = repo.default_branch
         work_branch   = default_branch or actual_branch
 
-        # Create requested branch if it differs from what auto_init made
         if actual_branch != default_branch:
-            init_sha = repo.get_branch(actual_branch).commit.sha
             try:
+                init_sha = repo.get_branch(actual_branch).commit.sha
                 repo.create_git_ref(f"refs/heads/{default_branch}", init_sha)
             except GithubException:
-                pass   # already exists
+                pass
 
-        # Brief pause — give GitHub's distributed backend time to propagate
-        # the auto-init commit across all git servers before we reference it.
-        import time
-        time.sleep(2)
+        # ── Upload all files via direct REST calls (httpx) ────────────────────
+        # PyGitHub's create_git_tree consistently returns 404 on freshly-created
+        # repos regardless of approach. Using httpx + known-good string URLs
+        # avoids any PyGitHub object-state / URL-resolution issues.
+        #
+        # Orphan commit (parents=[]) + force-update ref:
+        #   - Zero cross-server SHA lookups (no base_tree, no parent refs)
+        #   - Everything created fresh on the same server in this request
+        #   - auto_init README is replaced; scaffold is the only content
 
-        # Auto-init commit — used as parent for clean history
-        init_commit = repo.get_git_commit(
-            repo.get_branch(work_branch).commit.sha
+        time.sleep(2)   # let auto_init finish propagating
+
+        api_headers = {            "Authorization":        f"Bearer {self._token}",
+            "Accept":               "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        base = f"https://api.github.com/repos/{namespace_id}/{name}"
+
+        # 1. Create tree with all file contents (GitHub creates blobs atomically)
+        tree_resp = httpx.post(
+            f"{base}/git/trees",
+            headers=api_headers,
+            json={
+                "tree": [
+                    {
+                        "path":    path,
+                        "mode":    "100644",
+                        "type":    "blob",
+                        "content": content if isinstance(content, str)
+                                   else content.decode("utf-8"),
+                    }
+                    for path, content in files.items()
+                ]
+            },
+            timeout=120,
         )
+        tree_resp.raise_for_status()
+        tree_sha = tree_resp.json()["sha"]
 
-        # ── Single commit for all files via Git Data API ───────────────────────
-        # content= mode: GitHub creates blobs atomically inside create_git_tree.
-        # No base_tree — creates a fresh tree with ONLY our files, avoiding any
-        # cross-server SHA lookup for the auto-init tree (which causes 404).
-        tree_elements: List[InputGitTreeElement] = [
-            InputGitTreeElement(
-                path, "100644", "blob",
-                content=content if isinstance(content, str) else content.decode("utf-8"),
-            )
-            for path, content in files.items()
-        ]
+        # 2. Create orphan commit (no parents — no existing SHA references)
+        commit_resp = httpx.post(
+            f"{base}/git/commits",
+            headers=api_headers,
+            json={
+                "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                "tree":    tree_sha,
+                "parents": [],
+            },
+            timeout=30,
+        )
+        commit_resp.raise_for_status()
+        commit_sha = commit_resp.json()["sha"]
 
-        tree = repo.create_git_tree(tree_elements)  # no base_tree
-        commit = repo.create_git_commit(
-            message="feat: initial scaffold from DevOps Self-Service Portal",
-            tree=tree,
-            parents=[init_commit],
+        # 3. Force-update branch ref (replaces the auto-init README commit)
+        ref_resp = httpx.patch(
+            f"{base}/git/refs/heads/{work_branch}",
+            headers=api_headers,
+            json={"sha": commit_sha, "force": True},
+            timeout=15,
         )
-        repo.get_git_ref(f"heads/{work_branch}").edit(commit.sha)
-        logger.info(
-            "GitHub: pushed %d files to '%s' (1 commit)",
-            len(files), work_branch,
-        )
+        ref_resp.raise_for_status()
+
+        logger.info("GitHub: pushed %d files to '%s' (1 commit)", len(files), work_branch)
 
         return {
             "project_id":     str(repo.id),
