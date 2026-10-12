@@ -80,7 +80,7 @@ const FeatureCheckbox = ({ feature, checked, onToggle }) => (
 );
 
 // ── Summary chips ─────────────────────────────────────────────────────────────
-const SelectionSummary = ({ form }) => {
+const SelectionSummary = ({ form, active, onActivate, totalFiles }) => {
   const chips = [
     form.platform  && { label: form.platform.name,  icon: form.platform.icon,  accent: form.platform.accent,  bg: form.platform.bg  },
     form.projectType && { label: form.projectType.name, icon: form.projectType.icon, accent: form.projectType.accent, bg: form.projectType.bg },
@@ -94,11 +94,32 @@ const SelectionSummary = ({ form }) => {
 
   if (!chips.length) return null;
 
+  const hasFiles = totalFiles > 0;
+
   return (
-    <div>
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-2">
-        Your selections
-      </p>
+    <button
+      type="button"
+      onClick={hasFiles ? onActivate : undefined}
+      className={`w-full text-left rounded-xl p-3 transition-all ${
+        active
+          ? 'bg-indigo-50 border-2 border-indigo-400 ring-2 ring-indigo-100'
+          : hasFiles
+            ? 'bg-slate-50 border-2 border-transparent hover:border-indigo-200 hover:bg-indigo-50/50 cursor-pointer'
+            : 'bg-slate-50 border-2 border-transparent cursor-default'
+      }`}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          Your selections
+        </p>
+        {hasFiles && (
+          <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+            active ? 'bg-indigo-200 text-indigo-700' : 'bg-slate-200 text-slate-500'
+          }`}>
+            📂 {totalFiles} files — click to preview all
+          </span>
+        )}
+      </div>
       <div className="flex flex-wrap gap-1.5">
         {chips.map((c, i) => (
           <span
@@ -111,7 +132,7 @@ const SelectionSummary = ({ form }) => {
           </span>
         ))}
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -327,6 +348,84 @@ const SectionPromptPanel = ({ label, icon }) => (
     </p>
   </div>
 );
+
+// ── Right panel: combined all-files preview ───────────────────────────────────
+const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreviewFiles, projectName }) => {
+  // Merge all files, removing duplicates by path (later files win)
+  const allFiles = useMemo(() => {
+    const fileMap = new Map();
+    [...previewFiles, ...iacPreviewFiles, ...cicdPreviewFiles].forEach((file) => {
+      fileMap.set(file.path, file);
+    });
+    return Array.from(fileMap.values());
+  }, [previewFiles, iacPreviewFiles, cicdPreviewFiles]);
+
+  // Group files by source for summary
+  const summary = [
+    form.projectType && previewFiles.length > 0 && {
+      icon: form.projectType.icon,
+      name: form.projectType.name,
+      count: previewFiles.length,
+      accent: form.projectType.accent,
+      bg: form.projectType.bg,
+    },
+    form.iac && form.iac.id !== 'none' && iacPreviewFiles.length > 0 && {
+      icon: form.iac.icon,
+      name: form.iac.name,
+      count: iacPreviewFiles.length,
+      accent: form.iac.accent,
+      bg: form.iac.bg,
+    },
+    form.cicd && form.cicd.id !== 'none' && cicdPreviewFiles.length > 0 && {
+      icon: form.cicd.icon,
+      name: form.cicd.name,
+      count: cicdPreviewFiles.length,
+      accent: form.cicd.accent,
+      bg: form.cicd.bg,
+    },
+  ].filter(Boolean);
+
+  return (
+    <div className="flex h-full flex-col gap-3">
+      {/* Header */}
+      <div className="flex-shrink-0 rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[12px] font-bold text-indigo-700">
+            📦 Complete Project Scaffold
+          </p>
+          <span className="rounded-full bg-indigo-200 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+            {allFiles.length} total files
+          </span>
+        </div>
+        {/* Source breakdown */}
+        <div className="flex flex-wrap gap-1.5">
+          {summary.map((s, i) => (
+            <span
+              key={i}
+              style={{ color: s.accent, background: s.bg, borderColor: s.accent + '33' }}
+              className="flex items-center gap-1.5 rounded-lg border px-2 py-0.5
+                text-[11px] font-medium"
+            >
+              {s.icon} {s.name}
+              <span className="rounded bg-white/50 px-1.5 text-[10px] font-bold">
+                {s.count}
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* File tree */}
+      <div className="flex-1 min-h-0">
+        <TemplatePreview
+          files={allFiles}
+          projectName={projectName}
+          fillHeight
+        />
+      </div>
+    </div>
+  );
+};
 
 // ── Right panel: IaC / CI-CD code preview ─────────────────────────────────────
 const SectionCodePreview = ({ preview }) => {
@@ -813,7 +912,12 @@ const CreateProjectPage = () => {
 
           {/* Actions card */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <SelectionSummary form={form} />
+            <SelectionSummary
+              form={form}
+              active={activeSection === 'summary'}
+              onActivate={() => setActiveSection('summary')}
+              totalFiles={previewFiles.length + iacPreviewFiles.length + cicdPreviewFiles.length}
+            />
 
             {/* API error */}
             {createError && (
@@ -1077,6 +1181,17 @@ const CreateProjectPage = () => {
                 </div>
               )}
             </>
+          )}
+
+          {/* ── Summary: Combined All Files Preview ──────────────────────── */}
+          {activeSection === 'summary' && (
+            <CombinedPreviewPanel
+              form={form}
+              previewFiles={previewFiles}
+              iacPreviewFiles={iacPreviewFiles}
+              cicdPreviewFiles={cicdPreviewFiles}
+              projectName={form.repoName.trim() || (templateDef?.previewVars?.projectName ?? 'my-project')}
+            />
           )}
 
         </div>
