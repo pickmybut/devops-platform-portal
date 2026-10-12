@@ -1,6 +1,8 @@
 /**
  * Basic Pipeline — dynamic GitHub Actions workflow generator.
  *
+ * Full pipeline with staging/production environments, rollbacks, and load testing.
+ *
  * Composes test + deploy jobs based on:
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
@@ -30,16 +32,25 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   // ── IaC flags ───────────────────────────────────────────────────────────
   const hasPyCdk    = iacId === 'python-cdk';
   const hasTsCdk    = iacId === 'typescript-cdk';
-  const hasCdk      = hasPyCdk || hasTsCdk || iacId === 'csharp-cdk';
+  const hasCsharpCdk= iacId === 'csharp-cdk';
+  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk;
   const hasTf       = iacId === 'terraform';
   const hasSam      = iacId === 'sam';
+  const hasCfn      = iacId === 'cloudformation';
+  const hasPulumiPy = iacId === 'pulumi-python';
+  const hasPulumiTs = iacId === 'pulumi-ts';
+  const hasIac      = iacId !== 'none';
 
   // ── Infra architecture flags ─────────────────────────────────────────────
-  const isEcs         = infraId === 'ecs-fargate' || infraId === 'ecs-ec2';
+  const isEcsFargate  = infraId === 'ecs-fargate';
+  const isEcsEc2      = infraId === 'ecs-ec2';
+  const isEcs         = isEcsFargate || isEcsEc2;
   const isEks         = infraId === 'eks';
   const isLambdaInfra = infraId === 'lambda';
   const isS3Cf        = infraId === 's3-cloudfront';
+  const isEc2         = infraId === 'ec2';
   const needsDocker   = isEcs || isEks;
+  const hasInfraArch  = infraId !== 'none';
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -49,6 +60,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const database   = cfg.database       ?? 'postgresql';
 
   const needsPostgres = isPythonApp && database === 'postgresql';
+  const needsMysql    = isPythonApp && database === 'mysql';
 
   const parts = [];
 
@@ -60,6 +72,23 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
 #
 # Project type : ${projectType?.name  ?? 'None'}
 # IaC          : ${iac && iacId !== 'none' ? iac.name : 'None'}
+# Infra        : ${infra && infraId !== 'none' ? infra.name : 'None'}
+#
+# Required secrets:
+#   AWS_ROLE_ARN          — IAM role ARN for OIDC authentication
+#
+# Required variables (Settings → Secrets and variables → Variables):
+#   AWS_REGION            — e.g. eu-west-2
+#   AWS_ACCOUNT_ID        — AWS account ID${needsDocker ? `
+#   ECR_REPOSITORY        — ECR repository name` : ''}${isEcs ? `
+#   ECS_CLUSTER_STAGING   — ECS cluster name for staging
+#   ECS_SERVICE_STAGING   — ECS service name for staging
+#   ECS_CLUSTER_PROD      — ECS cluster name for production
+#   ECS_SERVICE_PROD      — ECS service name for production` : ''}${isS3Cf ? `
+#   S3_BUCKET_STAGING     — S3 bucket for staging
+#   S3_BUCKET_PROD        — S3 bucket for production
+#   CLOUDFRONT_DIST_STAGING — CloudFront distribution ID for staging
+#   CLOUDFRONT_DIST_PROD  — CloudFront distribution ID for production` : ''}
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: CI/CD Pipeline
@@ -70,16 +99,27 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   AWS_REGION: \${{ vars.AWS_REGION || 'eu-west-2' }}${needsDocker ? `
-  ECR_REPOSITORY: ${appName}` : ''}`
+  ECR_REPOSITORY: \${{ vars.ECR_REPOSITORY || '${appName}' }}` : ''}${hasCdk ? `
+  CDK_DIR: devops/cdk` : ''}${hasTf ? `
+  TF_DIR: devops/terraform` : ''}`
   );
 
   // ══════════════════════════════════════════════════════════════════════════
   // JOBS
   // ══════════════════════════════════════════════════════════════════════════
 
-  parts.push(`\njobs:`);
+  parts.push(`
+jobs:`);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // TEST JOB
+  // ══════════════════════════════════════════════════════════════════════════
 
   // ── Python Test Job ─────────────────────────────────────────────────────
   if (isPython) {
@@ -99,10 +139,29 @@ env:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5`
+      : needsMysql
+      ? `
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: ${appName}_test
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5`
       : '';
 
     parts.push(
-`  test:
+`  # ════════════════════════════════════════════════════════════════════════════
+  # TEST
+  # ════════════════════════════════════════════════════════════════════════════
+
+  test:
     name: Test
     runs-on: ubuntu-latest${services}
     steps:
@@ -123,16 +182,30 @@ env:
           ruff check .
 
       - name: Run tests
-        run: pytest --cov=. --cov-report=xml -v${needsPostgres ? `
+        run: |
+          pip install pytest pytest-cov
+          pytest --cov=. --cov-report=xml --cov-report=term -v${needsPostgres ? `
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/${appName}_test` : ''}`
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/${appName}_test` : ''}${needsMysql ? `
+        env:
+          DATABASE_URL: mysql+pymysql://root:root@localhost:3306/${appName}_test` : ''}
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false`
     );
   }
 
   // ── Java Test Job ───────────────────────────────────────────────────────
   if (isJava) {
     parts.push(
-`  test:
+`  # ════════════════════════════════════════════════════════════════════════════
+  # TEST
+  # ════════════════════════════════════════════════════════════════════════════
+
+  test:
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -146,14 +219,25 @@ env:
           cache: 'maven'
 
       - name: Run tests
-        run: mvn test -q`
+        run: mvn test -q
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: target/surefire-reports/`
     );
   }
 
   // ── Node Test Job ───────────────────────────────────────────────────────
   if (isNode) {
     parts.push(
-`  test:
+`  # ════════════════════════════════════════════════════════════════════════════
+  # TEST
+  # ════════════════════════════════════════════════════════════════════════════
+
+  test:
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -172,14 +256,23 @@ env:
         run: npm run lint
 
       - name: Run tests
-        run: npm test`
+        run: npm test -- --coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false`
     );
   }
 
   // ── .NET Test Job ───────────────────────────────────────────────────────
   if (isDotnet) {
     parts.push(
-`  test:
+`  # ════════════════════════════════════════════════════════════════════════════
+  # TEST
+  # ════════════════════════════════════════════════════════════════════════════
+
+  test:
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -194,24 +287,37 @@ env:
         run: dotnet restore
 
       - name: Run tests
-        run: dotnet test --no-restore --verbosity minimal`
+        run: dotnet test --no-restore --verbosity minimal --collect:"XPlat Code Coverage"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false`
     );
   }
 
-  // ── Docker Build Job ────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // BUILD JOB (Docker for container architectures)
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (needsDocker) {
     parts.push(
 `
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUILD
+  # ════════════════════════════════════════════════════════════════════════════
+
   build:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       id-token: write
       contents: read
     outputs:
       image-tag: \${{ steps.build.outputs.image-tag }}
+      ecr-uri: \${{ steps.build.outputs.ecr-uri }}
     steps:
       - uses: actions/checkout@v4
 
@@ -225,6 +331,11 @@ env:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Create ECR repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names \${{ env.ECR_REPOSITORY }} 2>/dev/null || \\
+          aws ecr create-repository --repository-name \${{ env.ECR_REPOSITORY }}
+
       - name: Build and push Docker image
         id: build
         env:
@@ -233,18 +344,27 @@ env:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT`
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "ecr-uri=$ECR_REGISTRY/$ECR_REPOSITORY" >> $GITHUB_OUTPUT`
     );
   }
 
-  // ── S3 + CloudFront Deploy ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // BUILD JOB (Static site for S3+CloudFront)
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (isS3Cf && isNode) {
     parts.push(
 `
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUILD
+  # ════════════════════════════════════════════════════════════════════════════
+
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -264,80 +384,64 @@ env:
         with:
           name: dist
           path: dist/
-
-  deploy:
-    name: Deploy to S3
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write
-      contents: read
-    environment: production
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
-          aws-region: \${{ env.AWS_REGION }}
-
-      - name: Deploy to S3
-        run: aws s3 sync dist/ s3://\${{ vars.S3_BUCKET }} --delete
-
-      - name: Invalidate CloudFront
-        run: |
-          aws cloudfront create-invalidation \\
-            --distribution-id \${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} \\
-            --paths "/*"`
+          retention-days: 7`
     );
   }
 
-  // ── CDK Deploy ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // CDK PIPELINE — Full staging/production flow
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (hasCdk) {
-    const cdkSetup = hasTsCdk
-      ? `      - name: Install CDK
+    const cdkSetupSteps = hasTsCdk
+      ? `      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: \${{ env.CDK_DIR }}/package-lock.json
+
+      - name: Install CDK dependencies
         run: |
-          cd devops/cdk
+          cd \$CDK_DIR
           npm ci
           npm install -g aws-cdk`
-      : `      - name: Install CDK
-        run: |
-          pip install -r devops/cdk/requirements.txt
-          npm install -g aws-cdk`;
-
-    const needsJob = needsDocker ? 'build' : 'test';
-
-    parts.push(
-`
-  deploy:
-    name: Deploy Infrastructure
-    runs-on: ubuntu-latest
-    needs: ${needsJob}
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write
-      contents: read
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-${hasTsCdk ? '' : `
-      - name: Set up Python
+      : `      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '${pythonVer}'
-`}
-      - name: Set up Node.js
+          cache: 'pip'
+          cache-dependency-path: \${{ env.CDK_DIR }}/requirements.txt
+
+      - name: Set up Node.js (for CDK CLI)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-${cdkSetup}
+      - name: Install CDK dependencies
+        run: |
+          pip install -r \$CDK_DIR/requirements.txt
+          npm install -g aws-cdk`;
+
+    const buildNeeds = needsDocker ? 'build' : 'test';
+
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # VALIDATE — CDK Synth
+  # ════════════════════════════════════════════════════════════════════════════
+
+  cdk-synth:
+    name: CDK Synth
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+${cdkSetupSteps}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -345,37 +449,350 @@ ${cdkSetup}
           role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
           aws-region: \${{ env.AWS_REGION }}
 
-      - name: CDK Deploy
-        run: |
-          cd devops/cdk
-          cdk deploy --require-approval never${needsDocker ? ' --context imageTag=${{ needs.build.outputs.image-tag }}' : ''}`
-    );
-  }
+      - name: CDK Synth
+        run: cd \$CDK_DIR && cdk synth
 
-  // ── Terraform Deploy ────────────────────────────────────────────────────
-  if (hasTf) {
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOY STAGING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [cdk-synth${needsDocker ? ', build' : ''}]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
+      url: \${{ vars.STAGING_URL }}
+    outputs:
+      stack-name: \${{ steps.deploy.outputs.stack-name }}
+    steps:
+      - uses: actions/checkout@v4
+
+${cdkSetupSteps}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: CDK Deploy Staging
+        id: deploy
+        run: |
+          cd \$CDK_DIR
+          cdk deploy --require-approval never \\
+            --context environment=staging${needsDocker ? ` \\
+            --context imageTag=\${{ needs.build.outputs.image-tag }}` : ''}
+          echo "stack-name=${projectName}Stack-staging" >> $GITHUB_OUTPUT`
+    );
+
+    // ECS Reload Staging
+    if (isEcs) {
+      parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # RELOAD STAGING (force ECS to pull new task definition)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  reload-staging:
+    name: Reload Staging ECS
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    permissions:
+      id-token: write
+      contents: read
+    environment: staging
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Force new deployment
+        run: |
+          aws ecs update-service \\
+            --cluster \${{ vars.ECS_CLUSTER_STAGING }} \\
+            --service \${{ vars.ECS_SERVICE_STAGING }} \\
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \\
+            --cluster \${{ vars.ECS_CLUSTER_STAGING }} \\
+            --services \${{ vars.ECS_SERVICE_STAGING }}`
+      );
+    }
+
+    // Load Testing
+    const loadTestNeeds = isEcs ? 'reload-staging' : 'deploy-staging';
     parts.push(
 `
-  terraform:
-    name: Terraform
+  # ════════════════════════════════════════════════════════════════════════════
+  # PERFORMANCE TESTING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  load-test:
+    name: Load Test (Staging)
     runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main'
+    needs: ${loadTestNeeds}
+    environment: staging
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run load test
+        run: |
+          k6 run tests/load-test.js \\
+            --vus 10 \\
+            --duration 60s \\
+            --env TARGET_URL=\${{ vars.STAGING_URL }}
+        continue-on-error: true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-results
+          path: k6-results.json
+          retention-days: 7`
+    );
+
+    // Rollback Staging
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # ROLLBACK STAGING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  rollback-staging:
+    name: Rollback Staging
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: failure() || cancelled()
+    permissions:
+      id-token: write
+      contents: read
+    environment: staging
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Rollback CloudFormation stack
+        run: |
+          aws cloudformation rollback-stack \\
+            --stack-name \${{ needs.deploy-staging.outputs.stack-name }} || true
+        continue-on-error: true`
+    );
+
+    // Production Release Gate
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # PRODUCTION RELEASE GATE
+  # ════════════════════════════════════════════════════════════════════════════
+
+  production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: load-test
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: |
+          echo "✅ Production release approved for commit \${{ github.sha }}"
+          echo "Approved by: \${{ github.actor }}"`
+    );
+
+    // Promote Docker Image (if applicable)
+    if (needsDocker) {
+      parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # PROMOTE IMAGE TO PRODUCTION TAG
+  # ════════════════════════════════════════════════════════════════════════════
+
+  promote-image:
+    name: Promote Image to Production
+    runs-on: ubuntu-latest
+    needs: [production-approval, build]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag image as production
+        env:
+          ECR_REGISTRY: \${{ steps.login-ecr.outputs.registry }}
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \\
+            --repository-name \${{ env.ECR_REPOSITORY }} \\
+            --image-ids imageTag=\${{ needs.build.outputs.image-tag }} \\
+            --query 'images[0].imageManifest' \\
+            --output text)
+          
+          aws ecr put-image \\
+            --repository-name \${{ env.ECR_REPOSITORY }} \\
+            --image-tag production \\
+            --image-manifest "$MANIFEST"`
+      );
+    }
+
+    // Deploy Production
+    const prodNeeds = needsDocker ? 'promote-image' : 'production-approval';
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOY PRODUCTION
+  # ════════════════════════════════════════════════════════════════════════════
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: ${prodNeeds}
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+      url: \${{ vars.PRODUCTION_URL }}
+    outputs:
+      stack-name: \${{ steps.deploy.outputs.stack-name }}
+    steps:
+      - uses: actions/checkout@v4
+
+${cdkSetupSteps}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: CDK Deploy Production
+        id: deploy
+        run: |
+          cd \$CDK_DIR
+          cdk deploy --require-approval never \\
+            --context environment=production${needsDocker ? ` \\
+            --context imageTag=production` : ''}
+          echo "stack-name=${projectName}Stack-production" >> $GITHUB_OUTPUT`
+    );
+
+    // ECS Reload Production
+    if (isEcs) {
+      parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # RELOAD PRODUCTION (force ECS to pull new task definition)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  reload-production:
+    name: Reload Production ECS
+    runs-on: ubuntu-latest
+    needs: deploy-production
     permissions:
       id-token: write
       contents: read
     environment: production
-    defaults:
-      run:
-        working-directory: devops/terraform
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
           aws-region: \${{ env.AWS_REGION }}
+
+      - name: Force new deployment
+        run: |
+          aws ecs update-service \\
+            --cluster \${{ vars.ECS_CLUSTER_PROD }} \\
+            --service \${{ vars.ECS_SERVICE_PROD }} \\
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \\
+            --cluster \${{ vars.ECS_CLUSTER_PROD }} \\
+            --services \${{ vars.ECS_SERVICE_PROD }}`
+      );
+    }
+
+    // Rollback Production
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # ROLLBACK PRODUCTION
+  # ════════════════════════════════════════════════════════════════════════════
+
+  rollback-production:
+    name: Rollback Production
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: failure()
+    permissions:
+      id-token: write
+      contents: read
+    environment: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Rollback CloudFormation stack
+        run: |
+          aws cloudformation rollback-stack \\
+            --stack-name \${{ needs.deploy-production.outputs.stack-name }} || true
+        continue-on-error: true`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // TERRAFORM PIPELINE — Full staging/production flow
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasTf) {
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # VALIDATE — Terraform
+  # ════════════════════════════════════════════════════════════════════════════
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: \${{ env.TF_DIR }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -383,29 +800,126 @@ ${cdkSetup}
           terraform_version: 1.9
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend=false
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      - name: Terraform Validate
+        run: terraform validate
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan`
-    );
-  }
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
 
-  // ── SAM Deploy ──────────────────────────────────────────────────────────
-  if (hasSam) {
-    parts.push(
-`
-  deploy:
-    name: Deploy SAM Application
+  # ════════════════════════════════════════════════════════════════════════════
+  # PLAN & APPLY STAGING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  terraform-staging:
+    name: Terraform Staging
     runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main'
+    needs: terraform-validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       id-token: write
       contents: read
-    environment: production
+    environment:
+      name: staging
+    defaults:
+      run:
+        working-directory: \${{ env.TF_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan (Staging)
+        run: terraform plan -var="environment=staging" -out=tfplan-staging
+
+      - name: Terraform Apply (Staging)
+        run: terraform apply -auto-approve tfplan-staging
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # PRODUCTION APPROVAL & APPLY
+  # ════════════════════════════════════════════════════════════════════════════
+
+  terraform-production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: terraform-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ Terraform production deployment approved"
+
+  terraform-production:
+    name: Terraform Production
+    runs-on: ubuntu-latest
+    needs: terraform-production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    defaults:
+      run:
+        working-directory: \${{ env.TF_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan (Production)
+        run: terraform plan -var="environment=production" -out=tfplan-prod
+
+      - name: Terraform Apply (Production)
+        run: terraform apply -auto-approve tfplan-prod`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SAM DEPLOY
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (hasSam) {
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # SAM — Staging & Production
+  # ════════════════════════════════════════════════════════════════════════════
+
+  sam-staging:
+    name: SAM Deploy Staging
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
     steps:
       - uses: actions/checkout@v4
 
@@ -426,29 +940,176 @@ ${cdkSetup}
       - name: SAM Build
         run: sam build
 
-      - name: SAM Deploy
+      - name: SAM Deploy Staging
         run: |
           sam deploy \\
             --no-confirm-changeset \\
             --no-fail-on-empty-changeset \\
-            --stack-name ${projectName} \\
+            --stack-name ${projectName}-staging \\
+            --parameter-overrides Environment=staging \\
+            --capabilities CAPABILITY_IAM
+
+  sam-production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: sam-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ SAM production deployment approved"
+
+  sam-production:
+    name: SAM Deploy Production
+    runs-on: ubuntu-latest
+    needs: sam-production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '${pythonVer}'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Setup SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: SAM Build
+        run: sam build
+
+      - name: SAM Deploy Production
+        run: |
+          sam deploy \\
+            --no-confirm-changeset \\
+            --no-fail-on-empty-changeset \\
+            --stack-name ${projectName}-production \\
+            --parameter-overrides Environment=production \\
             --capabilities CAPABILITY_IAM`
     );
   }
 
-  // ── ECS Deploy (when no CDK) ────────────────────────────────────────────
-  if (isEcs && !hasCdk && !hasTf) {
+  // ══════════════════════════════════════════════════════════════════════════
+  // S3 + CloudFront — Full staging/production flow
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isS3Cf && isNode && !hasCdk && !hasTf) {
     parts.push(
 `
-  deploy:
-    name: Deploy to ECS
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOY STAGING (S3 + CloudFront)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  deploy-staging:
+    name: Deploy to Staging
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main'
     permissions:
       id-token: write
       contents: read
-    environment: production
+    environment:
+      name: staging
+      url: \${{ vars.STAGING_URL }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy to S3 (Staging)
+        run: aws s3 sync dist/ s3://\${{ vars.S3_BUCKET_STAGING }} --delete
+
+      - name: Invalidate CloudFront (Staging)
+        run: |
+          aws cloudfront create-invalidation \\
+            --distribution-id \${{ vars.CLOUDFRONT_DIST_STAGING }} \\
+            --paths "/*"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # PRODUCTION APPROVAL & DEPLOY
+  # ════════════════════════════════════════════════════════════════════════════
+
+  production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ Production release approved"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+      url: \${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy to S3 (Production)
+        run: aws s3 sync dist/ s3://\${{ vars.S3_BUCKET_PROD }} --delete
+
+      - name: Invalidate CloudFront (Production)
+        run: |
+          aws cloudfront create-invalidation \\
+            --distribution-id \${{ vars.CLOUDFRONT_DIST_PROD }} \\
+            --paths "/*"`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ECS Deploy (when no IaC selected)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isEcs && !hasCdk && !hasTf) {
+    parts.push(
+`
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOY STAGING (ECS — no IaC)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  deploy-staging:
+    name: Deploy to Staging (ECS)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -456,22 +1117,64 @@ ${cdkSetup}
           role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
           aws-region: \${{ env.AWS_REGION }}
 
-      - name: Deploy to ECS
+      - name: Deploy to ECS (Staging)
         run: |
           aws ecs update-service \\
-            --cluster \${{ vars.ECS_CLUSTER }} \\
-            --service \${{ vars.ECS_SERVICE }} \\
+            --cluster \${{ vars.ECS_CLUSTER_STAGING }} \\
+            --service \${{ vars.ECS_SERVICE_STAGING }} \\
             --force-new-deployment
 
       - name: Wait for deployment
         run: |
           aws ecs wait services-stable \\
-            --cluster \${{ vars.ECS_CLUSTER }} \\
-            --services \${{ vars.ECS_SERVICE }}`
+            --cluster \${{ vars.ECS_CLUSTER_STAGING }} \\
+            --services \${{ vars.ECS_SERVICE_STAGING }}
+
+  production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ Production release approved"
+
+  deploy-production:
+    name: Deploy to Production (ECS)
+    runs-on: ubuntu-latest
+    needs: production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS (Production)
+        run: |
+          aws ecs update-service \\
+            --cluster \${{ vars.ECS_CLUSTER_PROD }} \\
+            --service \${{ vars.ECS_SERVICE_PROD }} \\
+            --force-new-deployment
+
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \\
+            --cluster \${{ vars.ECS_CLUSTER_PROD }} \\
+            --services \${{ vars.ECS_SERVICE_PROD }}`
     );
   }
 
-  // ── Lambda Deploy (when no CDK/SAM) ─────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // Lambda Deploy (when no IaC selected)
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (isLambdaInfra && !hasCdk && !hasSam && !hasTf) {
     const pkgCmd = isPython
       ? `          pip install -r requirements.txt -t ./package/
@@ -485,15 +1188,15 @@ ${cdkSetup}
 
     parts.push(
 `
-  deploy:
-    name: Deploy to Lambda
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOY LAMBDA
+  # ════════════════════════════════════════════════════════════════════════════
+
+  package-lambda:
+    name: Package Lambda
     runs-on: ubuntu-latest
     needs: test
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write
-      contents: read
-    environment: production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -501,17 +1204,79 @@ ${cdkSetup}
         run: |
 ${pkgCmd}
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package
+          path: function.zip
+
+  deploy-staging:
+    name: Deploy to Staging (Lambda)
+    runs-on: ubuntu-latest
+    needs: package-lambda
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: staging
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
           aws-region: \${{ env.AWS_REGION }}
 
-      - name: Deploy Lambda
+      - name: Deploy Lambda (Staging)
         run: |
           aws lambda update-function-code \\
-            --function-name \${{ vars.LAMBDA_FUNCTION_NAME }} \\
-            --zip-file fileb://function.zip`
+            --function-name \${{ vars.LAMBDA_FUNCTION_STAGING }} \\
+            --zip-file fileb://function.zip
+          aws lambda wait function-updated \\
+            --function-name \${{ vars.LAMBDA_FUNCTION_STAGING }}
+
+  production-approval:
+    name: Production Approval
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval checkpoint
+        run: echo "✅ Production release approved"
+
+  deploy-production:
+    name: Deploy to Production (Lambda)
+    runs-on: ubuntu-latest
+    needs: production-approval
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: production
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ env.AWS_REGION }}
+
+      - name: Deploy Lambda (Production)
+        run: |
+          aws lambda update-function-code \\
+            --function-name \${{ vars.LAMBDA_FUNCTION_PROD }} \\
+            --zip-file fileb://function.zip
+          aws lambda wait function-updated \\
+            --function-name \${{ vars.LAMBDA_FUNCTION_PROD }}`
     );
   }
 
@@ -536,6 +1301,6 @@ export const BASIC_PIPELINE_PREVIEW_VARS = {
 export const BASIC_PIPELINE_META = {
   id:          'basic',
   label:       'Basic Pipeline',
-  description: 'GitHub Actions workflow with test, build, and deploy',
+  description: 'GitHub Actions with staging, production, rollbacks, and load testing',
   fileCount:   1,
 };
