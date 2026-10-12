@@ -14,6 +14,14 @@ import {
   gitlabSecurityJobs,
   gitlabSlackJobs,
   gitlabAiReviewJob,
+  gitlabSecretDetectionJob,
+  gitlabContainerScanJob,
+  gitlabDastJob,
+  gitlabSonarCloudJob,
+  gitlabInfracostJob,
+  gitlabMsTeamsJobs,
+  gitlabSmokeTestJobs,
+  gitlabReleaseAutoJob,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -120,7 +128,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const hasInfraArch  = infraId !== 'none';
 
   // ── Feature flags ─────────────────────────────────────────────────────────
-  const feat = parseFeatureFlags(features);
+  const feat = parseFeatureFlags(features, { needsDocker, hasTf, hasCdk });
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -157,6 +165,11 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
     if (hasIac || (hasInfraArch && infraId !== 'none')) stages.push('Deploy');
     if (hasTf) stages.push('Destroy');
   }
+
+  // Add stages for features
+  if (feat.hasDast)         stages.push('DAST');
+  if (feat.hasSmokeTests)   stages.push('Smoke Test');
+  if (feat.hasReleaseAuto)  stages.push('Release');
 
   const parts = [];
 
@@ -987,13 +1000,38 @@ ${pulumiInstall}
   const secJobs = gitlabSecurityJobs(feat);
   if (secJobs) parts.push(secJobs);
 
+  const secretJob = gitlabSecretDetectionJob(feat);
+  if (secretJob) parts.push(secretJob);
+
+  const containerScanJob = gitlabContainerScanJob(feat);
+  if (containerScanJob) parts.push(containerScanJob);
+
+  const sonarJob = gitlabSonarCloudJob(feat);
+  if (sonarJob) parts.push(sonarJob);
+
+  const infracostJob = gitlabInfracostJob(feat);
+  if (infracostJob) parts.push(infracostJob);
+
+  const dastJob = gitlabDastJob(feat);
+  if (dastJob) parts.push(dastJob);
+
+  const smokeJobs = gitlabSmokeTestJobs(feat);
+  if (smokeJobs) parts.push(smokeJobs);
+
   // ── Feature: AI code review ──────────────────────────────────────────────
   const aiReview = gitlabAiReviewJob(feat);
   if (aiReview) parts.push(aiReview);
 
-  // ── Feature: Slack notifications (.post stage) ───────────────────────────
+  // ── Feature: Release Automation ──────────────────────────────────────────
+  const releaseJob = gitlabReleaseAutoJob(feat);
+  if (releaseJob) parts.push(releaseJob);
+
+  // ── Feature: Notifications (.post stage) ────────────────────────────────
   const slackJobs = gitlabSlackJobs(feat, projectName);
   if (slackJobs) parts.push(slackJobs);
+
+  const teamsJobs = gitlabMsTeamsJobs(feat, projectName);
+  if (teamsJobs) parts.push(teamsJobs);
 
   return parts.join('\n\n');
 }

@@ -18,6 +18,18 @@ import {
   bitbucketSlackMainStep,
   bitbucketAiReviewStepDef,
   bitbucketAiReviewPipelineStep,
+  bitbucketSecretDetectionStepDef,
+  bitbucketContainerScanStepDef,
+  bitbucketDastStepDef,
+  bitbucketSonarCloudStepDef,
+  bitbucketInfracostStepDef,
+  bitbucketMsTeamsStepDef,
+  bitbucketMsTeamsMainStep,
+  bitbucketSmokeTestStepDef,
+  bitbucketSmokeTestStagingStep,
+  bitbucketSmokeTestProductionStep,
+  bitbucketReleaseAutoStepDef,
+  bitbucketReleaseAutoMainStep,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -68,7 +80,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const hasInfraArch  = infraId !== 'none';
 
   // ── Feature flags ─────────────────────────────────────────────────────────
-  const feat = parseFeatureFlags(features);
+  const feat = parseFeatureFlags(features, { needsDocker, hasTf, hasCdk });
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -750,6 +762,30 @@ ${pulumiInstall}
   const secDefs = bitbucketSecurityStepDefs(feat);
   if (secDefs) parts.push(secDefs);
 
+  const secretDef = bitbucketSecretDetectionStepDef(feat);
+  if (secretDef) parts.push(secretDef);
+
+  const containerDef = bitbucketContainerScanStepDef(feat);
+  if (containerDef) parts.push(containerDef);
+
+  const dastDef = bitbucketDastStepDef(feat);
+  if (dastDef) parts.push(dastDef);
+
+  const sonarDef = bitbucketSonarCloudStepDef(feat);
+  if (sonarDef) parts.push(sonarDef);
+
+  const infracostDef = bitbucketInfracostStepDef(feat);
+  if (infracostDef) parts.push(infracostDef);
+
+  const teamsDef = bitbucketMsTeamsStepDef(feat);
+  if (teamsDef) parts.push(teamsDef);
+
+  const smokeDef = bitbucketSmokeTestStepDef(feat);
+  if (smokeDef) parts.push(smokeDef);
+
+  const releaseDef = bitbucketReleaseAutoStepDef(feat);
+  if (releaseDef) parts.push(releaseDef);
+
   // ── Feature: AI code review step definition ───────────────────────────────
   const aiDef = bitbucketAiReviewStepDef(feat);
   if (aiDef) parts.push(aiDef);
@@ -807,6 +843,12 @@ pipelines:`);
   // Feature steps in default pipeline (security scans on all branches)
   const defFeatureSteps = bitbucketDefaultFeatureSteps(feat);
   if (defFeatureSteps) parts.push(defFeatureSteps);
+
+  const secretStep = feat.hasSecretDetection ? `    - step: *secret-detection` : '';
+  if (secretStep) parts.push(secretStep);
+
+  const sonarStep = feat.hasSonarCloud ? `    - step: *sonarcloud` : '';
+  if (sonarStep) parts.push(sonarStep);
 
   // ══════════════════════════════════════════════════════════════════════════
   // MAIN BRANCH PIPELINE
@@ -986,10 +1028,23 @@ pipelines:`);
   const slackStep = bitbucketSlackMainStep(feat);
   if (slackStep) parts.push(slackStep);
 
-  // Feature: AI review runs on PRs (Bitbucket doesn't distinguish PR vs push
-  // at the branches level — add step and note it requires a PR context)
+  const teamsStep = bitbucketMsTeamsMainStep(feat);
+  if (teamsStep) parts.push(teamsStep);
+
+  // Feature: AI review runs on PRs
   const aiStep = bitbucketAiReviewPipelineStep(feat);
   if (aiStep) parts.push(aiStep);
+
+  // Smoke tests after deploy steps
+  const smokeStagingStep = bitbucketSmokeTestStagingStep(feat);
+  if (smokeStagingStep) parts.push(smokeStagingStep);
+
+  const smokeProductionStep = bitbucketSmokeTestProductionStep(feat);
+  if (smokeProductionStep) parts.push(smokeProductionStep);
+
+  // Release automation runs last on main
+  const releaseStep = bitbucketReleaseAutoMainStep(feat);
+  if (releaseStep) parts.push(releaseStep);
 
   // ══════════════════════════════════════════════════════════════════════════
   // CUSTOM PIPELINES (manual triggers)

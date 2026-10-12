@@ -827,6 +827,10 @@ const CreateProjectPage = () => {
   const [loading, setLoading] = useState(false);
   const [createError, setCreateError] = useState(null);
 
+  // ── Features search + pagination ──────────────────────────────────────────
+  const [featureSearch, setFeatureSearch] = useState('');
+  const [showAllFeatures, setShowAllFeatures] = useState(false);
+
   // ── Dynamic namespaces — reload whenever platform changes ─────────────────
   const [NAMESPACES, setNAMESPACES] = useState([]);
   const [namespacesLoading, setNamespacesLoading] = useState(false);
@@ -1228,20 +1232,82 @@ const CreateProjectPage = () => {
                   </p>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-2">
-                {ADDITIONAL_FEATURES.map((f) => (
-                  <FeatureCheckbox key={f.id} feature={f}
-                    checked={form.features.includes(f.id)}
-                    onToggle={(id) => {
-                      toggleFeature(id);
-                      // Navigate to the CI/CD preview (or summary) so user sees the injection
-                      if (form.cicd && form.cicd.id !== 'none') {
-                        activateSection('cicd');
-                      }
-                    }}
-                  />
-                ))}
+
+              {/* Search bar */}
+              <div className="relative mb-3">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[13px]">🔍</span>
+                <input
+                  type="text"
+                  value={featureSearch}
+                  onChange={(e) => { setFeatureSearch(e.target.value); setShowAllFeatures(true); }}
+                  placeholder="Search features…"
+                  className="w-full rounded-lg border border-slate-200 pl-8 pr-3 py-2
+                    text-[12.5px] text-slate-700 outline-none transition
+                    focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                />
+                {featureSearch && (
+                  <button
+                    onClick={() => { setFeatureSearch(''); setShowAllFeatures(false); }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400
+                      hover:text-slate-600 text-[11px]"
+                  >✕</button>
+                )}
               </div>
+
+              {/* Feature grid */}
+              {(() => {
+                const filtered = ADDITIONAL_FEATURES.filter((f) =>
+                  !featureSearch ||
+                  f.name.toLowerCase().includes(featureSearch.toLowerCase()) ||
+                  f.description.toLowerCase().includes(featureSearch.toLowerCase()) ||
+                  f.tag.toLowerCase().includes(featureSearch.toLowerCase())
+                );
+                const INITIAL_COUNT = 4;
+                const visible = (featureSearch || showAllFeatures)
+                  ? filtered
+                  : filtered.slice(0, INITIAL_COUNT);
+                const hiddenCount = filtered.length - INITIAL_COUNT;
+
+                return (
+                  <>
+                    {filtered.length === 0 ? (
+                      <p className="text-center text-[12px] text-slate-400 py-4">
+                        No features match &ldquo;{featureSearch}&rdquo;
+                      </p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        {visible.map((f) => (
+                          <FeatureCheckbox key={f.id} feature={f}
+                            checked={form.features.includes(f.id)}
+                            onToggle={(id) => {
+                              toggleFeature(id);
+                              if (form.cicd && form.cicd.id !== 'none') {
+                                activateSection('cicd');
+                              }
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Show more / less toggle */}
+                    {!featureSearch && hiddenCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllFeatures(v => !v)}
+                        className="mt-2.5 w-full rounded-lg border border-slate-200
+                          py-1.5 text-[12px] font-medium text-slate-500
+                          hover:bg-slate-50 hover:text-indigo-600 transition-colors"
+                      >
+                        {showAllFeatures
+                          ? '← Show less'
+                          : `Show ${hiddenCount} more feature${hiddenCount !== 1 ? 's' : ''} →`
+                        }
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
             </CategorySection>
           </div>
 

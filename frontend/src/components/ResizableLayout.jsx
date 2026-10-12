@@ -101,6 +101,22 @@ const ResizableLayout = ({
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
   const containerRef = useRef(null);
 
+  // On mount, set right panel to 62% of available container width
+  // so it's wider than the left panel by default
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const w = el.getBoundingClientRect().width;
+    if (w > 100) {
+      const r = Math.round(w * 0.62);
+      const l = w - r - 12;
+      if (r >= minRightWidth && l >= minLeftWidth) {
+        setRightWidth(r);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleToggleCollapse = useCallback(() => {
     setIsLeftCollapsed(prev => !prev);
   }, []);

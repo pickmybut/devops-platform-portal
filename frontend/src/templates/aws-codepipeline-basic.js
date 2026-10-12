@@ -21,6 +21,11 @@ import {
   codepipelineSecurityBuildCmds,
   codepipelineSlackPostBuild,
   codepipelineAiReviewCmds,
+  codepipelineSecretDetectionCmd,
+  codepipelineSonarCloudCmd,
+  codepipelineSmokeTestCmd,
+  codepipelineMsTeamsCmd,
+  codepipelineReleaseAutoCmd,
 } from './feature-snippets.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,7 +66,7 @@ function generateBuildspec({ projectName, appName, projectType, iac, infra, proj
   const needsDocker   = isEcs;
 
   // ── Feature flags ─────────────────────────────────────────────────────────
-  const feat = parseFeatureFlags(features);
+  const feat = parseFeatureFlags(features, { needsDocker, hasTf, hasCdk });
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -238,14 +243,14 @@ ${preBuildCmds.join('\n')}`
   parts.push(
 `  build:
     commands:
-${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}${codepipelineSecurityBuildCmds(feat) ? '\n' + codepipelineSecurityBuildCmds(feat) : ''}${codepipelineAiReviewCmds(feat) ? '\n' + codepipelineAiReviewCmds(feat) : ''}`
+${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}${codepipelineSecurityBuildCmds(feat) ? '\n' + codepipelineSecurityBuildCmds(feat) : ''}${codepipelineSecretDetectionCmd(feat) ? '\n' + codepipelineSecretDetectionCmd(feat) : ''}${codepipelineSonarCloudCmd(feat) ? '\n' + codepipelineSonarCloudCmd(feat) : ''}${codepipelineAiReviewCmds(feat) ? '\n' + codepipelineAiReviewCmds(feat) : ''}${codepipelineSmokeTestCmd(feat) ? '\n' + codepipelineSmokeTestCmd(feat) : ''}`
   );
 
   // ── Post-build phase ────────────────────────────────────────────────────
   parts.push(
 `  post_build:
     commands:
-      - echo "Build completed on $(date)"${codepipelineSlackPostBuild(feat, projectName)}`
+      - echo "Build completed on $(date)"${codepipelineSlackPostBuild(feat, projectName) ? '\n' + codepipelineSlackPostBuild(feat, projectName) : ''}${codepipelineMsTeamsCmd(feat, projectName) ? '\n' + codepipelineMsTeamsCmd(feat, projectName) : ''}${codepipelineReleaseAutoCmd(feat) ? '\n' + codepipelineReleaseAutoCmd(feat) : ''}`
   );
 
   // ── Artifacts ───────────────────────────────────────────────────────────

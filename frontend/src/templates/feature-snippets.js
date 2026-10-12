@@ -19,17 +19,26 @@
 // Feature flag parser — call this at the top of each generate() function
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function parseFeatureFlags(features = []) {
+export function parseFeatureFlags(features = [], opts = {}) {
+  const { needsDocker = false, hasTf = false, hasCdk = false } = opts;
   const has = (id) => Array.isArray(features) && features.includes(id);
   return {
-    hasMendSast:      has('mend-sast'),
-    hasMendSca:       has('mend-sca'),
-    hasGitLabSast:    has('gitlab-sast'),
-    hasDepScan:       has('dependency-scan'),
-    hasSlack:         has('slack-notifications'),
-    hasAiCodeReview:  has('ai-code-review'),
-    hasReadme:        has('readme'),  // file-only, no pipeline injection
-    hasAny:           features.length > 0,
+    hasMendSast:        has('mend-sast'),
+    hasMendSca:         has('mend-sca'),
+    hasGitLabSast:      has('gitlab-sast'),
+    hasDepScan:         has('dependency-scan'),
+    hasSlack:           has('slack-notifications'),
+    hasMsTeams:         has('ms-teams'),
+    hasAiCodeReview:    has('ai-code-review'),
+    hasSecretDetection: has('secret-detection'),
+    hasContainerScan:   has('container-scan') && needsDocker,
+    hasDast:            has('dast'),
+    hasSonarCloud:      has('sonarcloud'),
+    hasInfracost:       has('infracost') && (hasTf || hasCdk),
+    hasSmokeTests:      has('smoke-tests'),
+    hasReleaseAuto:     has('release-automation'),
+    hasReadme:          has('readme'),
+    hasAny:             features.length > 0,
   };
 }
 
@@ -700,4 +709,608 @@ ${AI_REVIEW_PYTHON_CORE}
             f.write(REVIEW_BODY)
         print("AI review saved to ai-code-review.md")
         PYEOF`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECRET DETECTION  —  GitLeaks
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabSecretDetectionJob(flags) {
+  if (!flags.hasSecretDetection) return '';
+  return `
+# ── Secret Detection (GitLeaks) ──────────────────────────────────────────────
+secret-detection:
+  stage: Test
+  image: zricethezav/gitleaks:latest
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - gitleaks detect --source=. --exit-code=1 --no-git --verbose
+  allow_failure: false`;
+}
+
+export function githubSecretDetectionJob(flags) {
+  if (!flags.hasSecretDetection) return '';
+  return `
+  # ── Secret Detection (GitLeaks) ──────────────────────────────────────────────
+  secret-detection:
+    name: Secret Detection (GitLeaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: GitLeaks Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
+}
+
+export function bitbucketSecretDetectionStepDef(flags) {
+  if (!flags.hasSecretDetection) return '';
+  return `
+    - step: &secret-detection
+        name: Secret Detection (GitLeaks)
+        image: zricethezav/gitleaks:latest
+        script:
+          - gitleaks detect --source=. --exit-code=1 --no-git --verbose`;
+}
+
+export function codepipelineSecretDetectionCmd(flags) {
+  if (!flags.hasSecretDetection) return '';
+  return `
+      - echo "Running GitLeaks secret detection..."
+      - docker run --rm -v $(pwd):/repo zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --no-git || true`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTAINER IMAGE SCAN  —  Trivy (only when Docker build is in pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabContainerScanJob(flags) {
+  if (!flags.hasContainerScan) return '';
+  return `
+# ── Container Image Scan (Trivy) ─────────────────────────────────────────────
+container-scan:
+  stage: Build
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: ['']
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format table $ECR_REGISTRY/$ECR_REPO:$CI_COMMIT_SHORT_SHA
+  allow_failure: true`;
+}
+
+export function githubContainerScanJob(flags) {
+  if (!flags.hasContainerScan) return '';
+  return `
+  # ── Container Image Scan (Trivy) ─────────────────────────────────────────────
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      security-events: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Run Trivy on Docker image
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: \${{ needs.build.outputs.ecr-uri }}:\${{ needs.build.outputs.image-tag }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif`;
+}
+
+export function bitbucketContainerScanStepDef(flags) {
+  if (!flags.hasContainerScan) return '';
+  return `
+    - step: &container-scan
+        name: Container Image Scan (Trivy)
+        image: aquasec/trivy:latest
+        services:
+          - docker
+        script:
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - trivy image --exit-code 0 --severity HIGH,CRITICAL $ECR_REGISTRY/$BITBUCKET_REPO_SLUG:$BITBUCKET_COMMIT`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAST  —  OWASP ZAP baseline scan against staging
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabDastJob(flags) {
+  if (!flags.hasDast) return '';
+  return `
+# ── DAST — OWASP ZAP Baseline Scan ──────────────────────────────────────────
+# Required CI/CD variable: STAGING_URL
+dast:
+  stage: Deploy Staging
+  image: ghcr.io/zaproxy/zaproxy:stable
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - mkdir -p /zap/wrk
+    - zap-baseline.py -t $STAGING_URL -r zap-report.html -I || true
+  artifacts:
+    paths:
+      - zap-report.html
+    expire_in: 1 week
+  allow_failure: true`;
+}
+
+export function githubDastJob(flags) {
+  if (!flags.hasDast) return '';
+  return `
+  # ── DAST — OWASP ZAP Baseline Scan ──────────────────────────────────────────
+  # Required variable: STAGING_URL
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
+    steps:
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: \${{ vars.STAGING_URL }}
+          fail_action: false
+          artifact_name: zap-report`;
+}
+
+export function bitbucketDastStepDef(flags) {
+  if (!flags.hasDast) return '';
+  return `
+    - step: &dast-scan
+        name: DAST — OWASP ZAP Baseline Scan
+        image: ghcr.io/zaproxy/zaproxy:stable
+        script:
+          - zap-baseline.py -t $STAGING_URL -r zap-report.html -I || true
+        artifacts:
+          - zap-report.html`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SONARCLOUD
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabSonarCloudJob(flags) {
+  if (!flags.hasSonarCloud) return '';
+  return `
+# ── SonarCloud Analysis ───────────────────────────────────────────────────────
+# Required: SONAR_TOKEN (project token), SONAR_HOST_URL=https://sonarcloud.io
+# Set sonar.organization and sonar.projectKey in sonar-project.properties
+sonarcloud:
+  stage: Test
+  image: sonarsource/sonar-scanner-cli:latest
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  variables:
+    SONAR_USER_HOME: '\${CI_PROJECT_DIR}/.sonar'
+    GIT_DEPTH: '0'
+  cache:
+    key: sonar
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner -Dsonar.qualitygate.wait=true
+  allow_failure: true`;
+}
+
+export function githubSonarCloudJob(flags) {
+  if (!flags.hasSonarCloud) return '';
+  return `
+  # ── SonarCloud Analysis ───────────────────────────────────────────────────────
+  # Required secrets: SONAR_TOKEN
+  # Set sonar.organization + sonar.projectKey in sonar-project.properties
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: \${{ secrets.SONAR_TOKEN }}`;
+}
+
+export function bitbucketSonarCloudStepDef(flags) {
+  if (!flags.hasSonarCloud) return '';
+  return `
+    - step: &sonarcloud
+        name: SonarCloud Analysis
+        script:
+          - pipe: sonarsource/sonarcloud-scan:2.0.0
+            variables:
+              SONAR_TOKEN: $SONAR_TOKEN`;
+}
+
+export function codepipelineSonarCloudCmd(flags) {
+  if (!flags.hasSonarCloud) return '';
+  return `
+      - echo "Running SonarCloud analysis..."
+      - sonar-scanner -Dsonar.host.url=https://sonarcloud.io || true`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INFRACOST  —  Cloud cost estimation (only when IaC is selected)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabInfracostJob(flags) {
+  if (!flags.hasInfracost) return '';
+  return `
+# ── Infracost Cloud Cost Estimation ──────────────────────────────────────────
+# Required: INFRACOST_API_KEY (from infracost.io), GITLAB_API_TOKEN
+infracost:
+  stage: Test
+  image: infracost/infracost:ci-0.10
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  script:
+    - cd devops/terraform || cd devops/cdk
+    - infracost diff --path . --format json --out-file /tmp/infracost.json
+    - infracost comment gitlab --path /tmp/infracost.json
+        --repo $CI_PROJECT_PATH
+        --merge-request $CI_MERGE_REQUEST_IID
+        --gitlab-token $GITLAB_API_TOKEN
+        --behavior update
+  allow_failure: true`;
+}
+
+export function githubInfracostJob(flags) {
+  if (!flags.hasInfracost) return '';
+  return `
+  # ── Infracost Cloud Cost Estimation ──────────────────────────────────────────
+  # Required secrets: INFRACOST_API_KEY (from infracost.io)
+  infracost:
+    name: Cloud Cost Estimation (Infracost)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: \${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Generate Infracost diff
+        run: |
+          cd devops/terraform 2>/dev/null || cd devops/cdk || true
+          infracost diff --path=. --format=json --out-file=/tmp/infracost.json
+
+      - name: Post Infracost comment
+        uses: infracost/actions/comment@v3
+        with:
+          path: /tmp/infracost.json
+          behavior: update`;
+}
+
+export function bitbucketInfracostStepDef(flags) {
+  if (!flags.hasInfracost) return '';
+  return `
+    - step: &infracost
+        name: Cloud Cost Estimation (Infracost)
+        image: infracost/infracost:ci-0.10
+        script:
+          - cd devops/terraform || cd devops/cdk || true
+          - infracost diff --path . --format table`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MICROSOFT TEAMS NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabMsTeamsJobs(flags, projectName) {
+  if (!flags.hasMsTeams) return '';
+  return `
+# ── Microsoft Teams Notifications ────────────────────────────────────────────
+# Required: MS_TEAMS_WEBHOOK_URL (masked CI/CD variable)
+ms-teams-success:
+  stage: .post
+  image: alpine:latest
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - apk add --no-cache curl
+    - |
+      curl -fsS -X POST -H 'Content-type: application/json' \\
+        --data '{"@type":"MessageCard","@context":"https://schema.org/extensions","themeColor":"00b300","summary":"Pipeline passed","sections":[{"activityTitle":"✅ Pipeline passed","activitySubtitle":"${projectName} · '"$CI_COMMIT_REF_NAME"'","activityText":"<a href='"$CI_PIPELINE_URL"'>View pipeline</a>"}]}' \\
+        $MS_TEAMS_WEBHOOK_URL
+
+ms-teams-failure:
+  stage: .post
+  image: alpine:latest
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_failure
+    - when: never
+  script:
+    - apk add --no-cache curl
+    - |
+      curl -fsS -X POST -H 'Content-type: application/json' \\
+        --data '{"@type":"MessageCard","@context":"https://schema.org/extensions","themeColor":"cc0000","summary":"Pipeline failed","sections":[{"activityTitle":"❌ Pipeline failed","activitySubtitle":"${projectName} · '"$CI_COMMIT_REF_NAME"'","activityText":"<a href='"$CI_PIPELINE_URL"'>View pipeline</a>"}]}' \\
+        $MS_TEAMS_WEBHOOK_URL`;
+}
+
+export function githubMsTeamsJob(flags, projectName) {
+  if (!flags.hasMsTeams) return '';
+  return `
+  # ── Microsoft Teams Notifications ────────────────────────────────────────────
+  # Required: MS_TEAMS_WEBHOOK_URL secret
+  ms-teams-notify:
+    name: Microsoft Teams Notification
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    needs:
+      - deploy-production
+    steps:
+      - name: Notify Teams on success
+        if: needs.deploy-production.result == 'success'
+        run: |
+          curl -fsS -X POST -H 'Content-type: application/json' \\
+            --data '{"@type":"MessageCard","themeColor":"00b300","summary":"Pipeline passed","sections":[{"activityTitle":"✅ ${projectName} deployed","activitySubtitle":"\${{ github.ref_name }}","activityText":"<a href=\${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}>View run</a>"}]}' \\
+            \${{ secrets.MS_TEAMS_WEBHOOK_URL }}
+      - name: Notify Teams on failure
+        if: needs.deploy-production.result != 'success'
+        run: |
+          curl -fsS -X POST -H 'Content-type: application/json' \\
+            --data '{"@type":"MessageCard","themeColor":"cc0000","summary":"Pipeline failed","sections":[{"activityTitle":"❌ ${projectName} pipeline failed","activitySubtitle":"\${{ github.ref_name }}","activityText":"<a href=\${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}>View run</a>"}]}' \\
+            \${{ secrets.MS_TEAMS_WEBHOOK_URL }}`;
+}
+
+export function bitbucketMsTeamsStepDef(flags) {
+  if (!flags.hasMsTeams) return '';
+  return `
+    - step: &ms-teams-notify
+        name: Notify Microsoft Teams
+        image: alpine:latest
+        script:
+          - apk add --no-cache curl
+          - |
+            curl -fsS -X POST -H 'Content-type: application/json' \\
+              --data '{"@type":"MessageCard","themeColor":"00b300","summary":"Pipeline passed","sections":[{"activityTitle":"✅ Pipeline passed for '"$BITBUCKET_REPO_SLUG"'"}]}' \\
+              $MS_TEAMS_WEBHOOK_URL`;
+}
+
+export function bitbucketMsTeamsMainStep(flags) {
+  return flags.hasMsTeams ? `      - step: *ms-teams-notify` : '';
+}
+
+export function codepipelineMsTeamsCmd(flags, projectName) {
+  if (!flags.hasMsTeams) return '';
+  return `
+      - echo "Sending Microsoft Teams notification..."
+      - |
+        STATUS=$([ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ] && echo "passed" || echo "failed")
+        curl -fsS -X POST -H 'Content-type: application/json' \\
+          --data '{"@type":"MessageCard","summary":"Pipeline '"$STATUS"'","sections":[{"activityTitle":"Pipeline '"$STATUS"' for ${projectName}"}]}' \\
+          $MS_TEAMS_WEBHOOK_URL || true`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMOKE TESTS  —  Post-deploy health checks
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabSmokeTestJobs(flags) {
+  if (!flags.hasSmokeTests) return '';
+  return `
+# ── Smoke Tests ───────────────────────────────────────────────────────────────
+# Required: STAGING_URL, PRODUCTION_URL
+smoke-test-staging:
+  stage: Deploy Staging
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - apk add --no-cache curl
+    - echo "Running smoke tests against $STAGING_URL..."
+    - |
+      for i in 1 2 3; do
+        curl -fsS --max-time 10 "$STAGING_URL/health" && break
+        echo "Attempt $i failed, retrying in 5s..."
+        sleep 5
+      done
+    - curl -fsS "$STAGING_URL/health" | grep -i "ok\\|healthy\\|up" || exit 1
+  allow_failure: true
+
+smoke-test-production:
+  stage: Deploy Production
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - apk add --no-cache curl
+    - echo "Running smoke tests against $PRODUCTION_URL..."
+    - |
+      for i in 1 2 3; do
+        curl -fsS --max-time 10 "$PRODUCTION_URL/health" && break
+        sleep 5
+      done
+    - curl -fsS "$PRODUCTION_URL/health" | grep -i "ok\\|healthy\\|up" || exit 1
+  allow_failure: true`;
+}
+
+export function githubSmokeTestSteps() {
+  return `
+      - name: Smoke test health endpoint
+        run: |
+          for i in 1 2 3; do
+            curl -fsS --max-time 10 \${{ vars.STAGING_URL }}/health && break || sleep 5
+          done
+          curl -fsS \${{ vars.STAGING_URL }}/health | grep -iE "ok|healthy|up" || exit 1
+        continue-on-error: true`;
+}
+
+export function githubSmokeTestProductionSteps() {
+  return `
+      - name: Smoke test production health endpoint
+        run: |
+          for i in 1 2 3; do
+            curl -fsS --max-time 10 \${{ vars.PRODUCTION_URL }}/health && break || sleep 5
+          done
+          curl -fsS \${{ vars.PRODUCTION_URL }}/health | grep -iE "ok|healthy|up" || exit 1
+        continue-on-error: true`;
+}
+
+export function bitbucketSmokeTestStepDef(flags) {
+  if (!flags.hasSmokeTests) return '';
+  return `
+    - step: &smoke-test-staging
+        name: Smoke Test (Staging)
+        image: alpine:latest
+        script:
+          - apk add --no-cache curl
+          - for i in 1 2 3; do curl -fsS --max-time 10 $STAGING_URL/health && break || sleep 5; done
+          - curl -fsS $STAGING_URL/health | grep -iE "ok|healthy|up"
+
+    - step: &smoke-test-production
+        name: Smoke Test (Production)
+        image: alpine:latest
+        script:
+          - apk add --no-cache curl
+          - for i in 1 2 3; do curl -fsS --max-time 10 $PRODUCTION_URL/health && break || sleep 5; done
+          - curl -fsS $PRODUCTION_URL/health | grep -iE "ok|healthy|up"`;
+}
+
+export function bitbucketSmokeTestStagingStep(flags) {
+  return flags.hasSmokeTests ? `      - step: *smoke-test-staging` : '';
+}
+
+export function bitbucketSmokeTestProductionStep(flags) {
+  return flags.hasSmokeTests ? `      - step: *smoke-test-production` : '';
+}
+
+export function codepipelineSmokeTestCmd(flags) {
+  if (!flags.hasSmokeTests) return '';
+  return `
+      - echo "Running smoke tests..."
+      - |
+        for i in 1 2 3; do
+          curl -fsS --max-time 10 $STAGING_URL/health && break || sleep 5
+        done
+        curl -fsS $STAGING_URL/health | grep -iE "ok|healthy|up" || echo "WARNING: Smoke test check inconclusive"`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RELEASE AUTOMATION  —  Semantic versioning + CHANGELOG
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function gitlabReleaseAutoJob(flags) {
+  if (!flags.hasReleaseAuto) return '';
+  return `
+# ── Release Automation (semantic-release) ────────────────────────────────────
+# Requires conventional commits (feat:, fix:, BREAKING CHANGE:)
+# Required: GITLAB_TOKEN (with write_repository + api scope), NODE_AUTH_TOKEN optional
+release:
+  stage: Release
+  image: node:20-slim
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - npm install -g semantic-release @semantic-release/gitlab @semantic-release/changelog @semantic-release/git
+    - npx semantic-release
+  variables:
+    GITLAB_TOKEN: $GITLAB_TOKEN`;
+}
+
+export function githubReleaseAutoJob(flags) {
+  if (!flags.hasReleaseAuto) return '';
+  return `
+  # ── Release Automation (Release Please) ──────────────────────────────────────
+  # Creates versioned PRs + GitHub Releases from conventional commits
+  # Requires conventional commits (feat:, fix:, chore!:, etc.)
+  release:
+    name: Release Automation
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: google-github-actions/release-please-action@v4
+        with:
+          release-type: simple
+          token: \${{ secrets.GITHUB_TOKEN }}`;
+}
+
+export function bitbucketReleaseAutoStepDef(flags) {
+  if (!flags.hasReleaseAuto) return '';
+  return `
+    - step: &release-automation
+        name: Release Automation (semantic-release)
+        image: node:20-slim
+        script:
+          - npm install -g semantic-release @semantic-release/gitlab @semantic-release/changelog
+          - npx semantic-release
+        variables:
+          GITLAB_TOKEN: $BITBUCKET_RELEASE_TOKEN`;
+}
+
+export function bitbucketReleaseAutoMainStep(flags) {
+  return flags.hasReleaseAuto ? `      - step: *release-automation` : '';
+}
+
+export function codepipelineReleaseAutoCmd(flags) {
+  if (!flags.hasReleaseAuto) return '';
+  return `
+      - echo "Running semantic-release..."
+      - npm install -g semantic-release @semantic-release/changelog @semantic-release/git --quiet
+      - npx semantic-release || true`;
 }

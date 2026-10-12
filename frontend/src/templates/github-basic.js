@@ -15,6 +15,13 @@ import {
   githubSecurityJobs,
   githubSlackJob,
   githubAiReviewJob,
+  githubSecretDetectionJob,
+  githubContainerScanJob,
+  githubDastJob,
+  githubSonarCloudJob,
+  githubInfracostJob,
+  githubMsTeamsJob,
+  githubReleaseAutoJob,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -64,7 +71,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const hasInfraArch  = infraId !== 'none';
 
   // ── Feature flags ─────────────────────────────────────────────────────────
-  const feat = parseFeatureFlags(features);
+  const feat = parseFeatureFlags(features, { needsDocker, hasTf, hasCdk });
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -1500,19 +1507,40 @@ ${pulumiSetup}
     );
   }
 
-  // ── Feature: security / quality / docker-lint jobs ───────────────────────
-  // Pass CodeQL language hint based on project type
+  // ── Feature: security / quality jobs ───────────────────────────────────────
   const codeqlLang = isJava ? 'java' : isDotnet ? 'csharp' : isNode ? 'javascript' : isPython ? 'python' : 'javascript';
   const secJobs = githubSecurityJobs(feat, codeqlLang);
   if (secJobs) parts.push(secJobs);
+
+  const secretJob = githubSecretDetectionJob(feat);
+  if (secretJob) parts.push(secretJob);
+
+  const containerScanJob = githubContainerScanJob(feat);
+  if (containerScanJob) parts.push(containerScanJob);
+
+  const sonarJob = githubSonarCloudJob(feat);
+  if (sonarJob) parts.push(sonarJob);
+
+  const infracostJob = githubInfracostJob(feat);
+  if (infracostJob) parts.push(infracostJob);
+
+  const dastJob = githubDastJob(feat);
+  if (dastJob) parts.push(dastJob);
 
   // ── Feature: AI code review ──────────────────────────────────────────────
   const aiReview = githubAiReviewJob(feat);
   if (aiReview) parts.push(aiReview);
 
-  // ── Feature: Slack notification job (last, needs deploy-production) ──────
+  // ── Feature: Release Automation ──────────────────────────────────────────
+  const releaseJob = githubReleaseAutoJob(feat);
+  if (releaseJob) parts.push(releaseJob);
+
+  // ── Feature: Notifications ───────────────────────────────────────────────
   const slackJob = githubSlackJob(feat, projectName);
   if (slackJob) parts.push(slackJob);
+
+  const teamsJob = githubMsTeamsJob(feat, projectName);
+  if (teamsJob) parts.push(teamsJob);
 
   return parts.join('\n');
 }
