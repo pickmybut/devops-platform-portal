@@ -167,28 +167,28 @@ const PLATFORM_DETAILS = {
     ciFile:    '.gitlab-ci.yml',
     status:    'supported',
     features:  ['MR Pipelines', 'Environments', 'Container Registry', 'GitLab Pages', 'Mend Security Scans'],
-    note:      'Full pipeline generation is available now — all templates in this portal target GitLab CI.',
+    note:      'Full pipeline generation is available — all templates in this portal support GitLab CI.',
     color:     '#fc6d26',
   },
   github: {
-    ciFile:    '.github/workflows/pipeline.yml',
-    status:    'coming-soon',
+    ciFile:    '.github/workflows/ci.yml',
+    status:    'supported',
     features:  ['Pull Request Checks', 'GitHub Packages', 'Environments', 'OIDC for AWS', 'Dependabot'],
-    note:      'GitHub Actions pipeline generation is coming soon. Repository creation will work but no pipeline template will be scaffolded yet.',
+    note:      'GitHub Actions workflow generation is available. Select a CI/CD pipeline to scaffold your workflow.',
     color:     '#1f2937',
   },
   bitbucket: {
     ciFile:    'bitbucket-pipelines.yml',
-    status:    'coming-soon',
+    status:    'supported',
     features:  ['PR Pipelines', 'Deployments', 'Jira Integration', 'Pipes (pre-built steps)'],
-    note:      'Bitbucket Pipelines generation is coming soon.',
+    note:      'Bitbucket Pipelines generation is available. Select a CI/CD pipeline to scaffold your workflow.',
     color:     '#0052cc',
   },
   'aws-codepipeline': {
-    ciFile:    'buildspec.yml  +  pipeline.json',
-    status:    'coming-soon',
+    ciFile:    'buildspec.yml + pipeline.json',
+    status:    'supported',
     features:  ['CodeBuild', 'CodeDeploy', 'ECR Integration', 'ECS Deploy Actions', 'CloudFormation Deploy'],
-    note:      'AWS CodePipeline + CodeBuild scaffolding is coming soon.',
+    note:      'AWS CodePipeline + CodeBuild scaffolding is available. Select a CI/CD pipeline to generate buildspec.yml and pipeline definition.',
     color:     '#f97316',
   },
 };
@@ -578,7 +578,7 @@ const CreateProjectPage = () => {
   }, [iacTemplateDef, form.repoName, form.projectType, form.infra, form.projectTypeConfig]);
 
   // ── CI/CD template — re-runs whenever project type, IaC, or config changes ─
-  const cicdTemplateDef = form.cicd ? getCicdTemplate(form.cicd.id) : null;
+  const cicdTemplateDef = form.cicd ? getCicdTemplate(form.cicd.id, form.platform?.id) : null;
 
   const cicdPreviewFiles = useMemo(() => {
     if (!cicdTemplateDef) return [];

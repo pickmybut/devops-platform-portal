@@ -76,13 +76,72 @@ export function getIacTemplate(iacId) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CI/CD registry
 // ─────────────────────────────────────────────────────────────────────────────
-import { buildBasicPipelineFiles, BASIC_PIPELINE_PREVIEW_VARS, BASIC_PIPELINE_META } from './gitlab-basic';
+import {
+  buildBasicPipelineFiles as buildGitLabBasicPipelineFiles,
+  BASIC_PIPELINE_PREVIEW_VARS as GITLAB_BASIC_PREVIEW_VARS,
+  BASIC_PIPELINE_META as GITLAB_BASIC_META,
+} from './gitlab-basic';
 
-export const CICD_TEMPLATE_REGISTRY = {
-  'basic': { meta: BASIC_PIPELINE_META, previewVars: BASIC_PIPELINE_PREVIEW_VARS, build: buildBasicPipelineFiles },
+import {
+  buildBasicPipelineFiles as buildGitHubBasicPipelineFiles,
+  BASIC_PIPELINE_PREVIEW_VARS as GITHUB_BASIC_PREVIEW_VARS,
+  BASIC_PIPELINE_META as GITHUB_BASIC_META,
+} from './github-basic';
+
+import {
+  buildBasicPipelineFiles as buildBitbucketBasicPipelineFiles,
+  BASIC_PIPELINE_PREVIEW_VARS as BITBUCKET_BASIC_PREVIEW_VARS,
+  BASIC_PIPELINE_META as BITBUCKET_BASIC_META,
+} from './bitbucket-basic';
+
+import {
+  buildBasicPipelineFiles as buildAwsCodePipelineBasicPipelineFiles,
+  BASIC_PIPELINE_PREVIEW_VARS as AWS_CODEPIPELINE_BASIC_PREVIEW_VARS,
+  BASIC_PIPELINE_META as AWS_CODEPIPELINE_BASIC_META,
+} from './aws-codepipeline-basic';
+
+// Platform-specific CI/CD registries
+const CICD_TEMPLATE_REGISTRY_BY_PLATFORM = {
+  gitlab: {
+    basic: {
+      meta: GITLAB_BASIC_META,
+      previewVars: GITLAB_BASIC_PREVIEW_VARS,
+      build: buildGitLabBasicPipelineFiles,
+    },
+  },
+  github: {
+    basic: {
+      meta: GITHUB_BASIC_META,
+      previewVars: GITHUB_BASIC_PREVIEW_VARS,
+      build: buildGitHubBasicPipelineFiles,
+    },
+  },
+  bitbucket: {
+    basic: {
+      meta: BITBUCKET_BASIC_META,
+      previewVars: BITBUCKET_BASIC_PREVIEW_VARS,
+      build: buildBitbucketBasicPipelineFiles,
+    },
+  },
+  'aws-codepipeline': {
+    basic: {
+      meta: AWS_CODEPIPELINE_BASIC_META,
+      previewVars: AWS_CODEPIPELINE_BASIC_PREVIEW_VARS,
+      build: buildAwsCodePipelineBasicPipelineFiles,
+    },
+  },
 };
 
-/** Returns the CI/CD template, or null if not yet implemented. */
-export function getCicdTemplate(cicdId) {
-  return CICD_TEMPLATE_REGISTRY[cicdId] ?? null;
+// Fallback to GitLab (default)
+export const CICD_TEMPLATE_REGISTRY = CICD_TEMPLATE_REGISTRY_BY_PLATFORM.gitlab;
+
+/**
+ * Returns the CI/CD template for a given cicdId and platform.
+ * @param {string} cicdId - The CI/CD option id (e.g., 'basic')
+ * @param {string} [platformId='gitlab'] - The platform id (e.g., 'gitlab', 'github', 'bitbucket', 'aws-codepipeline')
+ * @returns {object|null} The template definition or null if not implemented
+ */
+export function getCicdTemplate(cicdId, platformId = 'gitlab') {
+  const platformRegistry = CICD_TEMPLATE_REGISTRY_BY_PLATFORM[platformId] ?? CICD_TEMPLATE_REGISTRY_BY_PLATFORM.gitlab;
+  return platformRegistry[cicdId] ?? null;
 }
