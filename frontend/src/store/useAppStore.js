@@ -6,14 +6,17 @@ const INITIAL_FORM = {
   description: '',
   visibility: 'private',
   // one selection per category (null = nothing chosen yet)
-  platform: null,            // GitLab | GitHub | Bitbucket | AWS CodePipeline
+  platform: null,
   projectType: null,
-  projectTypeConfig: {}, // { djangoVersion: '6.1', pythonVersion: '3.14', ... }
+  projectTypeConfig: {},
   iac: null,
-  infra: null,           // Infrastructure Architecture (ECS Fargate, Lambda, EKS, etc.)
+  infra: null,
   cicd: null,
   // array of selected feature ids
   features: [],
+  // governance
+  team: '',
+  costCenter: '',
 };
 
 const useAppStore = create((set) => ({
@@ -32,6 +35,13 @@ const useAppStore = create((set) => ({
 
   updateForm: (patch) =>
     set((s) => ({ form: { ...s.form, ...patch } })),
+
+  /** Pre-fill the create form from a cloned project record (Dashboard → Create). */
+  presetForm: (preset) =>
+    set({
+      form: { ...INITIAL_FORM, ...preset },
+      currentPage: 'create',
+    }),
 
   /** Update one key inside projectTypeConfig */
   setProjectTypeConfig: (key, value) =>

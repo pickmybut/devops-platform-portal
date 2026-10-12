@@ -10,26 +10,26 @@ const api = axios.create({
 
 /**
  * POST /api/projects
- *
- * @param {{
- *   platform:      'gitlab'|'github'|'bitbucket'|'aws-codepipeline',
- *   projectName:   string,
- *   namespaceId:   string,
- *   description?:  string,
- *   defaultBranch?:string,
- *   visibility?:   'private'|'internal'|'public',
- *   files:         Record<string, string>   // { 'path/to/file': 'content' }
- * }} data
  */
 export const createProject = (data) => api.post('/api/projects', data);
 
 /**
+ * GET /api/projects
+ * Returns all persisted project records (newest first).
+ *
+ * @param {{ platform?: string, team?: string, search?: string, limit?: number }} [params]
+ */
+export const getProjects = (params = {}) =>
+  api.get('/api/projects', { params });
+
+/**
+ * DELETE /api/projects/:projectId  (soft-delete / archive)
+ */
+export const archiveProject = (projectId) =>
+  api.delete(`/api/projects/${encodeURIComponent(projectId)}`);
+
+/**
  * GET /api/namespaces?platform=...&search=...
- *
- * Returns groups/orgs/workspaces/regions for the given platform.
- *
- * @param {string} platform
- * @param {string} [search]
  */
 export const getNamespaces = (platform, search = '') =>
   api.get('/api/namespaces', { params: { platform, search } });

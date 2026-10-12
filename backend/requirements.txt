@@ -4,6 +4,9 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 python-dotenv==1.0.1
 
+# Database
+sqlalchemy==2.0.36
+
 # Platform SDKs
 python-gitlab==4.12.2        # GitLab
 PyGithub==2.5.0              # GitHub
