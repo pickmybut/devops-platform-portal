@@ -22,6 +22,11 @@ const useAppStore = create((set) => ({
   currentPage: 'create',
   setCurrentPage: (page) => set({ currentPage: page }),
 
+  // ── Sidebar ───────────────────────────────────────────────────────────────
+  sidebarCollapsed: false,
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+
   // ── Form ─────────────────────────────────────────────────────────────────
   form: { ...INITIAL_FORM },
 
