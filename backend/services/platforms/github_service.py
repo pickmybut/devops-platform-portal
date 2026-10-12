@@ -12,6 +12,7 @@ Post-creation:
 import base64
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 import httpx
@@ -108,15 +109,25 @@ class GitHubService(BasePlatformService):
                 )
 
             # ── Primary: Git Data API — single commit for all files ───────────
-            # N blobs + 1 tree + 1 commit + 1 ref = N+3 calls total.
-            # Uses init_commit.tree as base so README from auto_init is replaced.
+            # Creates all blobs in parallel (ThreadPoolExecutor), then
+            # builds the tree + commit in one shot.  N+3 calls total.
             try:
-                tree_elements: List[InputGitTreeElement] = []
-                for path, content in upload_files.items():
+                def _make_blob(item):
+                    path, content = item
                     blob = repo.create_git_blob(content, "utf-8")
-                    tree_elements.append(
-                        InputGitTreeElement(path, "100644", "blob", sha=blob.sha)
-                    )
+                    return path, blob.sha
+
+                tree_elements: List[InputGitTreeElement] = []
+                with ThreadPoolExecutor(max_workers=10) as pool:
+                    futures = {
+                        pool.submit(_make_blob, item): item[0]
+                        for item in upload_files.items()
+                    }
+                    for future in as_completed(futures):
+                        path, sha = future.result()
+                        tree_elements.append(
+                            InputGitTreeElement(path, "100644", "blob", sha=sha)
+                        )
 
                 tree   = repo.create_git_tree(tree_elements, init_commit.tree)
                 commit = repo.create_git_commit(

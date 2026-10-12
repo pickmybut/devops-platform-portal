@@ -5,7 +5,7 @@ const API_BASE = process.env.PLATFORM_API_URL || 'http://localhost:8000';
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 60_000,  // repo creation + file commits can take a while
+  timeout: 180_000,  // 3 min — blob creation for large scaffolds can take 60-90s
 });
 
 /**
