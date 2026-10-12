@@ -350,96 +350,236 @@ const SectionPromptPanel = ({ label, icon }) => (
 );
 
 // ── Pipeline Flow Diagram ─────────────────────────────────────────────────────
-// Base stage definitions
-const STAGE_DEFS = {
-  source:     { icon: '📥', label: 'Source',     color: '#64748b', bg: '#f1f5f9' },
-  test:       { icon: '🧪', label: 'Test',       color: '#818cf8', bg: '#eef2ff' },
-  build:      { icon: '🔨', label: 'Build',      color: '#f59e0b', bg: '#fffbeb' },
-  package:    { icon: '📦', label: 'Package',    color: '#f59e0b', bg: '#fffbeb' },
-  docker:     { icon: '🐳', label: 'Docker',     color: '#0ea5e9', bg: '#e0f2fe' },
-  push:       { icon: '⬆️', label: 'Push ECR',   color: '#06b6d4', bg: '#cffafe' },
-  staging:    { icon: '🚀', label: 'Staging',    color: '#10b981', bg: '#ecfdf5' },
-  'load-test':{ icon: '📊', label: 'Load Test',  color: '#6366f1', bg: '#eef2ff' },
-  approval:   { icon: '✋', label: 'Approval',   color: '#ef4444', bg: '#fef2f2' },
-  production: { icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
-  sync:       { icon: '☁️', label: 'S3 Sync',    color: '#0ea5e9', bg: '#e0f2fe' },
-  invalidate: { icon: '🔄', label: 'CDN Flush',  color: '#8b5cf6', bg: '#ede9fe' },
-  upload:     { icon: '📤', label: 'Upload',     color: '#f59e0b', bg: '#fffbeb' },
-  codedeploy: { icon: '🚀', label: 'CodeDeploy', color: '#10b981', bg: '#ecfdf5' },
-  helm:       { icon: '⎈', label: 'Helm',       color: '#0ea5e9', bg: '#e0f2fe' },
-  kubectl:    { icon: '☸️', label: 'kubectl',    color: '#326ce5', bg: '#dbeafe' },
+// Base stage definitions - dynamically customized per project type
+const getStageDefinitions = (projectTypeId) => {
+  // Project-type specific test/build stage customizations
+  const projectStages = {
+    // Python projects
+    'python-fastapi': { 
+      install: { icon: '📦', label: 'pip install', color: '#3776ab', bg: '#e0f2fe' },
+      lint:    { icon: '🔍', label: 'flake8',      color: '#3776ab', bg: '#dbeafe' },
+      test:    { icon: '🧪', label: 'pytest',      color: '#818cf8', bg: '#eef2ff' },
+    },
+    'python-django': { 
+      install: { icon: '📦', label: 'pip install', color: '#3776ab', bg: '#e0f2fe' },
+      lint:    { icon: '🔍', label: 'flake8',      color: '#3776ab', bg: '#dbeafe' },
+      test:    { icon: '🧪', label: 'pytest',      color: '#818cf8', bg: '#eef2ff' },
+    },
+    'python-flask': { 
+      install: { icon: '📦', label: 'pip install', color: '#3776ab', bg: '#e0f2fe' },
+      lint:    { icon: '🔍', label: 'flake8',      color: '#3776ab', bg: '#dbeafe' },
+      test:    { icon: '🧪', label: 'pytest',      color: '#818cf8', bg: '#eef2ff' },
+    },
+    
+    // Node.js projects
+    'node-express': {
+      install: { icon: '📦', label: 'npm install', color: '#68a063', bg: '#ecfdf5' },
+      lint:    { icon: '🔍', label: 'eslint',      color: '#4b32c3', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'jest',        color: '#818cf8', bg: '#eef2ff' },
+    },
+    'node-nestjs': {
+      install: { icon: '📦', label: 'npm install', color: '#68a063', bg: '#ecfdf5' },
+      lint:    { icon: '🔍', label: 'eslint',      color: '#4b32c3', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'jest',        color: '#818cf8', bg: '#eef2ff' },
+    },
+    
+    // Frontend projects
+    'react': {
+      install: { icon: '📦', label: 'npm install', color: '#68a063', bg: '#ecfdf5' },
+      lint:    { icon: '🔍', label: 'eslint',      color: '#4b32c3', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'vitest',      color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'npm build',   color: '#f59e0b', bg: '#fffbeb' },
+    },
+    'vue': {
+      install: { icon: '📦', label: 'npm install', color: '#68a063', bg: '#ecfdf5' },
+      lint:    { icon: '🔍', label: 'eslint',      color: '#4b32c3', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'vitest',      color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'npm build',   color: '#f59e0b', bg: '#fffbeb' },
+    },
+    'angular': {
+      install: { icon: '📦', label: 'npm install', color: '#68a063', bg: '#ecfdf5' },
+      lint:    { icon: '🔍', label: 'ng lint',     color: '#dd0031', bg: '#fee2e2' },
+      test:    { icon: '🧪', label: 'ng test',     color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'ng build',    color: '#f59e0b', bg: '#fffbeb' },
+    },
+    
+    // Java projects
+    'java-springboot': {
+      install: { icon: '📦', label: 'mvn install', color: '#007396', bg: '#e0f2fe' },
+      lint:    { icon: '🔍', label: 'checkstyle',  color: '#007396', bg: '#dbeafe' },
+      test:    { icon: '🧪', label: 'JUnit',       color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'mvn package', color: '#f59e0b', bg: '#fffbeb' },
+    },
+    'java-quarkus': {
+      install: { icon: '📦', label: 'mvn install', color: '#007396', bg: '#e0f2fe' },
+      lint:    { icon: '🔍', label: 'checkstyle',  color: '#007396', bg: '#dbeafe' },
+      test:    { icon: '🧪', label: 'JUnit',       color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'mvn package', color: '#f59e0b', bg: '#fffbeb' },
+    },
+    
+    // Go projects
+    'go-gin': {
+      install: { icon: '📦', label: 'go mod',   color: '#00add8', bg: '#e0f7fa' },
+      lint:    { icon: '🔍', label: 'golint',   color: '#00add8', bg: '#e0f7fa' },
+      test:    { icon: '🧪', label: 'go test',  color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'go build', color: '#f59e0b', bg: '#fffbeb' },
+    },
+    'go-fiber': {
+      install: { icon: '📦', label: 'go mod',   color: '#00add8', bg: '#e0f7fa' },
+      lint:    { icon: '🔍', label: 'golint',   color: '#00add8', bg: '#e0f7fa' },
+      test:    { icon: '🧪', label: 'go test',  color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'go build', color: '#f59e0b', bg: '#fffbeb' },
+    },
+    
+    // .NET projects
+    'dotnet-webapi': {
+      install: { icon: '📦', label: 'dotnet restore', color: '#512bd4', bg: '#ede9fe' },
+      lint:    { icon: '🔍', label: 'dotnet format',  color: '#512bd4', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'dotnet test',    color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'dotnet build',   color: '#f59e0b', bg: '#fffbeb' },
+    },
+    
+    // Rust projects
+    'rust-actix': {
+      install: { icon: '📦', label: 'cargo fetch', color: '#dea584', bg: '#fff7ed' },
+      lint:    { icon: '🔍', label: 'clippy',      color: '#dea584', bg: '#fff7ed' },
+      test:    { icon: '🧪', label: 'cargo test',  color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'cargo build', color: '#f59e0b', bg: '#fffbeb' },
+    },
+
+    // Terraform (IaC-only)
+    'terraform': {
+      install: { icon: '📦', label: 'tf init',     color: '#7b42bc', bg: '#ede9fe' },
+      lint:    { icon: '🔍', label: 'tf validate', color: '#7b42bc', bg: '#ede9fe' },
+      test:    { icon: '🧪', label: 'tf plan',     color: '#818cf8', bg: '#eef2ff' },
+      build:   { icon: '🔨', label: 'tf apply',    color: '#f59e0b', bg: '#fffbeb' },
+    },
+  };
+
+  // Get project-specific stages or defaults
+  const projectSpecific = projectStages[projectTypeId] || {};
+  
+  // Base/common stage definitions
+  return {
+    source:     { icon: '📥', label: 'Source',     color: '#64748b', bg: '#f1f5f9' },
+    install:    projectSpecific.install || { icon: '📦', label: 'Install',    color: '#64748b', bg: '#f1f5f9' },
+    lint:       projectSpecific.lint    || { icon: '🔍', label: 'Lint',       color: '#64748b', bg: '#f1f5f9' },
+    test:       projectSpecific.test    || { icon: '🧪', label: 'Test',       color: '#818cf8', bg: '#eef2ff' },
+    build:      projectSpecific.build   || { icon: '🔨', label: 'Build',      color: '#f59e0b', bg: '#fffbeb' },
+    package:    { icon: '📦', label: 'Package',    color: '#f59e0b', bg: '#fffbeb' },
+    docker:     { icon: '🐳', label: 'Docker',     color: '#0ea5e9', bg: '#e0f2fe' },
+    push:       { icon: '⬆️', label: 'Push ECR',   color: '#06b6d4', bg: '#cffafe' },
+    staging:    { icon: '🚀', label: 'Staging',    color: '#10b981', bg: '#ecfdf5' },
+    'load-test':{ icon: '📊', label: 'Load Test',  color: '#6366f1', bg: '#eef2ff' },
+    approval:   { icon: '✋', label: 'Approval',   color: '#ef4444', bg: '#fef2f2' },
+    production: { icon: '🌐', label: 'Production', color: '#059669', bg: '#d1fae5' },
+    sync:       { icon: '☁️', label: 'S3 Sync',    color: '#0ea5e9', bg: '#e0f2fe' },
+    invalidate: { icon: '🔄', label: 'CDN Flush',  color: '#8b5cf6', bg: '#ede9fe' },
+    upload:     { icon: '📤', label: 'Upload',     color: '#f59e0b', bg: '#fffbeb' },
+    codedeploy: { icon: '🚀', label: 'CodeDeploy', color: '#10b981', bg: '#ecfdf5' },
+    helm:       { icon: '⎈', label: 'Helm',       color: '#0ea5e9', bg: '#e0f2fe' },
+    kubectl:    { icon: '☸️', label: 'kubectl',    color: '#326ce5', bg: '#dbeafe' },
+  };
 };
 
-// Infrastructure-specific pipeline flows
+// Infrastructure-specific pipeline flows (with install/lint/test prefix)
 const INFRA_PIPELINES = {
   // Container-based (ECS Fargate, ECS EC2)
-  'ecs-fargate': ['test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
-  'ecs-ec2':     ['test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
+  'ecs-fargate': ['install', 'lint', 'test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
+  'ecs-ec2':     ['install', 'lint', 'test', 'docker', 'push', 'staging', 'load-test', 'approval', 'production'],
 
   // Kubernetes
-  'eks':         ['test', 'docker', 'push', 'helm', 'staging', 'load-test', 'approval', 'production'],
-  'k8s-ec2':     ['test', 'docker', 'push', 'kubectl', 'staging', 'load-test', 'approval', 'production'],
+  'eks':         ['install', 'lint', 'test', 'docker', 'push', 'helm', 'staging', 'load-test', 'approval', 'production'],
+  'k8s-ec2':     ['install', 'lint', 'test', 'docker', 'push', 'kubectl', 'staging', 'load-test', 'approval', 'production'],
 
   // Serverless
-  'lambda':      ['test', 'package', 'staging', 'load-test', 'approval', 'production'],
+  'lambda':      ['install', 'lint', 'test', 'package', 'staging', 'load-test', 'approval', 'production'],
 
-  // Static hosting
-  's3-cloudfront': ['test', 'build', 'sync', 'invalidate', 'staging', 'approval', 'production'],
+  // Static hosting (frontend apps)
+  's3-cloudfront': ['install', 'lint', 'test', 'build', 'sync', 'invalidate', 'staging', 'approval', 'production'],
 
   // Traditional EC2
-  'ec2':         ['test', 'build', 'upload', 'codedeploy', 'staging', 'approval', 'production'],
+  'ec2':         ['install', 'lint', 'test', 'build', 'upload', 'codedeploy', 'staging', 'approval', 'production'],
 
   // Default (no infra selected)
-  'default':     ['test', 'build', 'staging', 'load-test', 'approval', 'production'],
+  'default':     ['install', 'lint', 'test', 'build', 'staging', 'load-test', 'approval', 'production'],
 };
 
 // AWS CodePipeline has Source stage first
 const CODEPIPELINE_INFRA_PIPELINES = {
-  'ecs-fargate':   ['source', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
-  'ecs-ec2':       ['source', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
-  'eks':           ['source', 'test', 'docker', 'push', 'helm', 'staging', 'approval', 'production'],
-  'k8s-ec2':       ['source', 'test', 'docker', 'push', 'kubectl', 'staging', 'approval', 'production'],
-  'lambda':        ['source', 'test', 'package', 'staging', 'approval', 'production'],
-  's3-cloudfront': ['source', 'build', 'sync', 'invalidate', 'approval', 'production'],
-  'ec2':           ['source', 'build', 'upload', 'codedeploy', 'approval', 'production'],
-  'default':       ['source', 'build', 'test', 'staging', 'approval', 'production'],
+  'ecs-fargate':   ['source', 'install', 'lint', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
+  'ecs-ec2':       ['source', 'install', 'lint', 'test', 'docker', 'push', 'staging', 'approval', 'production'],
+  'eks':           ['source', 'install', 'lint', 'test', 'docker', 'push', 'helm', 'staging', 'approval', 'production'],
+  'k8s-ec2':       ['source', 'install', 'lint', 'test', 'docker', 'push', 'kubectl', 'staging', 'approval', 'production'],
+  'lambda':        ['source', 'install', 'lint', 'test', 'package', 'staging', 'approval', 'production'],
+  's3-cloudfront': ['source', 'install', 'build', 'sync', 'invalidate', 'approval', 'production'],
+  'ec2':           ['source', 'install', 'test', 'build', 'upload', 'codedeploy', 'approval', 'production'],
+  'default':       ['source', 'install', 'lint', 'test', 'build', 'staging', 'approval', 'production'],
 };
 
-// Tooltips based on infrastructure
-const getStageTooltips = (infraId) => ({
-  source:     'CodeCommit / GitHub / S3 source',
-  test:       'Unit tests, linting, type checks',
-  build:      infraId === 's3-cloudfront' ? 'npm build static assets' : 'Compile application',
-  package:    'Package Lambda deployment zip',
-  docker:     'Build Docker image',
-  push:       'Push image to ECR registry',
-  sync:       'Sync build artifacts to S3 bucket',
-  invalidate: 'Invalidate CloudFront cache',
-  upload:     'Upload artifact to S3 for CodeDeploy',
-  codedeploy: 'CodeDeploy to EC2 instances',
-  helm:       'Helm upgrade to EKS cluster',
-  kubectl:    'kubectl apply to K8s cluster',
-  staging:    infraId ? `Deploy to staging` : 'Deploy to staging environment',
-  'load-test': 'k6/Artillery load tests against staging',
-  approval:   'Manual approval gate',
-  production: infraId ? `Deploy to production` : 'Deploy to production',
-});
+// Tooltips based on project type and infrastructure
+const getStageTooltips = (projectTypeId, infraId) => {
+  const projectTooltips = {
+    'python-fastapi': { install: 'pip install -r requirements.txt', lint: 'flake8 + black', test: 'pytest with coverage' },
+    'python-django':  { install: 'pip install -r requirements.txt', lint: 'flake8 + black', test: 'pytest + Django tests' },
+    'python-flask':   { install: 'pip install -r requirements.txt', lint: 'flake8 + black', test: 'pytest with coverage' },
+    'node-express':   { install: 'npm ci', lint: 'eslint + prettier', test: 'jest with coverage' },
+    'node-nestjs':    { install: 'npm ci', lint: 'eslint + prettier', test: 'jest e2e + unit tests' },
+    'react':          { install: 'npm ci', lint: 'eslint + prettier', test: 'vitest + RTL', build: 'vite build' },
+    'vue':            { install: 'npm ci', lint: 'eslint + prettier', test: 'vitest', build: 'vite build' },
+    'angular':        { install: 'npm ci', lint: 'ng lint', test: 'karma + jasmine', build: 'ng build --prod' },
+    'java-springboot':{ install: 'mvn dependency:resolve', lint: 'checkstyle', test: 'JUnit 5 + Mockito', build: 'mvn package -DskipTests' },
+    'java-quarkus':   { install: 'mvn dependency:resolve', lint: 'checkstyle', test: 'JUnit 5', build: 'mvn package -Pnative' },
+    'go-gin':         { install: 'go mod download', lint: 'golangci-lint', test: 'go test ./...', build: 'go build -o app' },
+    'go-fiber':       { install: 'go mod download', lint: 'golangci-lint', test: 'go test ./...', build: 'go build -o app' },
+    'dotnet-webapi':  { install: 'dotnet restore', lint: 'dotnet format --verify-no-changes', test: 'dotnet test', build: 'dotnet publish' },
+    'rust-actix':     { install: 'cargo fetch', lint: 'cargo clippy', test: 'cargo test', build: 'cargo build --release' },
+    'terraform':      { install: 'terraform init', lint: 'terraform validate + tflint', test: 'terraform plan', build: 'terraform apply -auto-approve' },
+  };
 
-const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
+  const pt = projectTooltips[projectTypeId] || {};
+
+  return {
+    source:     'CodeCommit / GitHub / S3 source',
+    install:    pt.install || 'Install dependencies',
+    lint:       pt.lint || 'Code linting & formatting',
+    test:       pt.test || 'Unit tests with coverage',
+    build:      pt.build || (infraId === 's3-cloudfront' ? 'Build static assets' : 'Compile application'),
+    package:    'Package Lambda deployment zip',
+    docker:     'Build Docker image',
+    push:       'Push image to ECR registry',
+    sync:       'Sync build artifacts to S3 bucket',
+    invalidate: 'Invalidate CloudFront cache',
+    upload:     'Upload artifact to S3 for CodeDeploy',
+    codedeploy: 'CodeDeploy to EC2 instances',
+    helm:       'Helm upgrade to EKS cluster',
+    kubectl:    'kubectl apply to K8s cluster',
+    staging:    'Deploy to staging environment',
+    'load-test': 'k6/Artillery load tests',
+    approval:   'Manual approval gate',
+    production: 'Deploy to production',
+  };
+};
+
+const PipelineFlowDiagram = ({ platform, cicd, infra, iac, projectType }) => {
   // No diagram if no CI/CD or "none" selected
   if (!cicd || cicd.id === 'none') return null;
 
   // Get infrastructure-specific pipeline stages
   const infraId = infra?.id && infra.id !== 'none' ? infra.id : 'default';
+  const projectTypeId = projectType?.id || 'default';
   const isCodePipeline = platform?.id === 'aws-codepipeline';
   
   const pipelineStages = isCodePipeline
     ? (CODEPIPELINE_INFRA_PIPELINES[infraId] || CODEPIPELINE_INFRA_PIPELINES.default)
     : (INFRA_PIPELINES[infraId] || INFRA_PIPELINES.default);
 
+  // Get project-type aware stage definitions
+  const STAGE_DEFS = getStageDefinitions(projectTypeId);
+  
   // Build stages array with definitions
   const stages = pipelineStages.map(id => ({ id, ...STAGE_DEFS[id] }));
-  const tooltips = getStageTooltips(infraId);
+  const tooltips = getStageTooltips(projectTypeId, infraId);
 
   return (
     <div className="flex-shrink-0 rounded-xl border border-slate-200 bg-white p-3">
@@ -501,19 +641,24 @@ const PipelineFlowDiagram = ({ platform, cicd, infra, iac }) => {
         })}
       </div>
 
-      {/* Infrastructure context */}
-      {infra && infra.id !== 'none' && (
-        <div className="mt-2 pt-2 border-t border-slate-100">
+      {/* Context footer: Project type + Infrastructure + IaC */}
+      <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-x-3 gap-y-1">
+        {projectType && (
+          <p className="text-[10px] text-slate-400">
+            <span className="font-medium text-slate-500">Stack:</span> {projectType.icon} {projectType.name}
+          </p>
+        )}
+        {infra && infra.id !== 'none' && (
           <p className="text-[10px] text-slate-400">
             <span className="font-medium text-slate-500">Target:</span> {infra.icon} {infra.name}
-            {iac && iac.id !== 'none' && (
-              <span className="ml-2">
-                <span className="font-medium text-slate-500">via</span> {iac.icon} {iac.name}
-              </span>
-            )}
           </p>
-        </div>
-      )}
+        )}
+        {iac && iac.id !== 'none' && (
+          <p className="text-[10px] text-slate-400">
+            <span className="font-medium text-slate-500">IaC:</span> {iac.icon} {iac.name}
+          </p>
+        )}
+      </div>
     </div>
   );
 };
@@ -590,6 +735,7 @@ const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreview
         cicd={form.cicd}
         infra={form.infra}
         iac={form.iac}
+        projectType={form.projectType}
       />
 
       {/* File tree */}
