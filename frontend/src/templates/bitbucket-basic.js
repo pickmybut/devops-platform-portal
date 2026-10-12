@@ -1,6 +1,8 @@
 /**
  * Basic Pipeline — dynamic Bitbucket Pipelines generator.
  *
+ * Full pipeline with staging/production environments, manual triggers, and rollbacks.
+ *
  * Composes test + deploy steps based on:
  *   projectType     — what language / framework is being used
  *   iac             — what infrastructure tool will be deployed
@@ -30,15 +32,18 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   // ── IaC flags ───────────────────────────────────────────────────────────
   const hasPyCdk    = iacId === 'python-cdk';
   const hasTsCdk    = iacId === 'typescript-cdk';
-  const hasCdk      = hasPyCdk || hasTsCdk || iacId === 'csharp-cdk';
+  const hasCsharpCdk= iacId === 'csharp-cdk';
+  const hasCdk      = hasPyCdk || hasTsCdk || hasCsharpCdk;
   const hasTf       = iacId === 'terraform';
   const hasSam      = iacId === 'sam';
+  const hasIac      = iacId !== 'none';
 
   // ── Infra architecture flags ─────────────────────────────────────────────
   const isEcs         = infraId === 'ecs-fargate' || infraId === 'ecs-ec2';
   const isLambdaInfra = infraId === 'lambda';
   const isS3Cf        = infraId === 's3-cloudfront';
   const needsDocker   = isEcs;
+  const hasInfraArch  = infraId !== 'none';
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
@@ -48,6 +53,7 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
   const database   = cfg.database       ?? 'postgresql';
 
   const needsPostgres = isPythonApp && database === 'postgresql';
+  const needsMysql    = isPythonApp && database === 'mysql';
 
   const parts = [];
 
@@ -59,14 +65,32 @@ function generate({ projectName, appName, projectType, iac, infra, projectTypeCo
 #
 # Project type : ${projectType?.name  ?? 'None'}
 # IaC          : ${iac && iacId !== 'none' ? iac.name : 'None'}
+# Infra        : ${infra && infraId !== 'none' ? infra.name : 'None'}
 #
 # Required repository variables (Repository settings → Pipelines → Variables):
-#   AWS_ACCESS_KEY_ID
-#   AWS_SECRET_ACCESS_KEY
-#   AWS_DEFAULT_REGION
+#   AWS_ACCESS_KEY_ID        — IAM access key (secured)
+#   AWS_SECRET_ACCESS_KEY    — IAM secret key (secured)
+#   AWS_DEFAULT_REGION       — e.g. eu-west-2
+#   AWS_ACCOUNT_ID           — AWS account ID${isEcs ? `
+#   ECS_CLUSTER_STAGING      — ECS cluster name for staging
+#   ECS_SERVICE_STAGING      — ECS service name for staging
+#   ECS_CLUSTER_PROD         — ECS cluster name for production
+#   ECS_SERVICE_PROD         — ECS service name for production` : ''}${isS3Cf ? `
+#   S3_BUCKET_STAGING        — S3 bucket for staging
+#   S3_BUCKET_PROD           — S3 bucket for production
+#   CLOUDFRONT_DIST_STAGING  — CloudFront distribution ID for staging
+#   CLOUDFRONT_DIST_PROD     — CloudFront distribution ID for production` : ''}
+#
+# Deployment environments must be configured in:
+#   Repository settings → Deployments → Add environment
+#   - staging
+#   - production (with required reviewers)
 # ──────────────────────────────────────────────────────────────────────────────
 
 image: atlassian/default-image:4
+
+options:
+  max-time: 30
 
 definitions:
   caches:
@@ -79,56 +103,65 @@ definitions:
       variables:
         POSTGRES_DB: ${appName}_test
         POSTGRES_USER: postgres
-        POSTGRES_PASSWORD: postgres` : `
+        POSTGRES_PASSWORD: postgres` : ''}${needsMysql ? `
+    mysql:
+      image: mysql:8.0
+      variables:
+        MYSQL_DATABASE: ${appName}_test
+        MYSQL_ROOT_PASSWORD: root` : ''}
     docker:
-      memory: 2048`}
+      memory: 3072
 
-pipelines:`
+  steps:`
   );
 
   // ══════════════════════════════════════════════════════════════════════════
-  // DEFAULT (runs on all branches)
+  // REUSABLE STEP DEFINITIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  parts.push(`  default:`);
-
-  // ── Python Test Step ────────────────────────────────────────────────────
+  // ── Python Test Step Definition ─────────────────────────────────────────
   if (isPython) {
     parts.push(
-`    - step:
+`    - step: &test-python
         name: Test
         image: python:${pythonVer}-slim
         caches:
           - pip${needsPostgres ? `
         services:
-          - postgres` : ''}
+          - postgres` : ''}${needsMysql ? `
+        services:
+          - mysql` : ''}
         script:
           - pip install -r requirements.txt
           - pip install ruff pytest pytest-cov
           - ruff check .
-          - pytest --cov=. --cov-report=xml -v${needsPostgres ? `
+          - pytest --cov=. --cov-report=xml --cov-report=term -v${needsPostgres ? `
         variables:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/${appName}_test` : ''}`
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/${appName}_test` : ''}${needsMysql ? `
+        variables:
+          DATABASE_URL: mysql+pymysql://root:root@localhost:3306/${appName}_test` : ''}`
     );
   }
 
-  // ── Java Test Step ──────────────────────────────────────────────────────
+  // ── Java Test Step Definition ───────────────────────────────────────────
   if (isJava) {
     parts.push(
-`    - step:
+`    - step: &test-java
         name: Test
         image: maven:3.9-eclipse-temurin-${javaVer}
         caches:
           - maven
         script:
-          - mvn test -q`
+          - mvn test -q
+        artifacts:
+          - target/surefire-reports/**`
     );
   }
 
-  // ── Node Test Step ──────────────────────────────────────────────────────
+  // ── Node Test Step Definition ───────────────────────────────────────────
   if (isNode) {
     parts.push(
-`    - step:
+`    - step: &test-node
         name: Test
         image: node:${nodeVer}-slim
         caches:
@@ -136,14 +169,14 @@ pipelines:`
         script:
           - npm ci
           - npm run lint
-          - npm test`
+          - npm test -- --coverage`
     );
   }
 
-  // ── .NET Test Step ──────────────────────────────────────────────────────
+  // ── .NET Test Step Definition ───────────────────────────────────────────
   if (isDotnet) {
     parts.push(
-`    - step:
+`    - step: &test-dotnet
         name: Test
         image: mcr.microsoft.com/dotnet/sdk:${dotnetVer}
         script:
@@ -152,184 +185,416 @@ pipelines:`
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // BRANCHES (main/master deployments)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  parts.push(`
-  branches:
-    main:`);
-
-  // ── Repeat test step for main branch ────────────────────────────────────
-  if (isPython) {
-    parts.push(
-`      - step:
-          name: Test
-          image: python:${pythonVer}-slim
-          caches:
-            - pip${needsPostgres ? `
-          services:
-            - postgres` : ''}
-          script:
-            - pip install -r requirements.txt
-            - pip install ruff pytest pytest-cov
-            - ruff check .
-            - pytest --cov=. --cov-report=xml -v${needsPostgres ? `
-          variables:
-            DATABASE_URL: postgres://postgres:postgres@localhost:5432/${appName}_test` : ''}`
-    );
-  } else if (isJava) {
-    parts.push(
-`      - step:
-          name: Test
-          image: maven:3.9-eclipse-temurin-${javaVer}
-          caches:
-            - maven
-          script:
-            - mvn test -q`
-    );
-  } else if (isNode) {
-    parts.push(
-`      - step:
-          name: Test
-          image: node:${nodeVer}-slim
-          caches:
-            - npm
-          script:
-            - npm ci
-            - npm run lint
-            - npm test`
-    );
-  } else if (isDotnet) {
-    parts.push(
-`      - step:
-          name: Test
-          image: mcr.microsoft.com/dotnet/sdk:${dotnetVer}
-          script:
-            - dotnet restore
-            - dotnet test --no-restore --verbosity minimal`
-    );
-  }
-
-  // ── Docker Build Step ───────────────────────────────────────────────────
+  // ── Docker Build Step Definition ────────────────────────────────────────
   if (needsDocker) {
     parts.push(
-`      - step:
-          name: Build & Push Docker Image
-          services:
-            - docker
-          script:
-            - export IMAGE_TAG=$BITBUCKET_COMMIT
-            - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-            - pipe: atlassian/aws-ecr-push-image:2.4.0
-              variables:
-                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
-                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
-                AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
-                IMAGE_NAME: ${appName}
-                TAGS: $IMAGE_TAG`
+`
+    - step: &build-docker
+        name: Build & Push Docker Image
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - export IMAGE_TAG=$BITBUCKET_COMMIT
+          - export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          - export ECR_REPO=${appName}
+          - pipe: atlassian/aws-ecr-push-image:2.4.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              IMAGE_NAME: $ECR_REPO
+              TAGS: $IMAGE_TAG
+          - echo "IMAGE_TAG=$IMAGE_TAG" >> image.env
+        artifacts:
+          - image.env`
     );
   }
 
-  // ── S3 + CloudFront Deploy ──────────────────────────────────────────────
-  if (isS3Cf && isNode) {
+  // ── Node Build Step Definition ──────────────────────────────────────────
+  if (isNode && (isS3Cf || isMfe)) {
     parts.push(
-`      - step:
-          name: Build
-          image: node:${nodeVer}-slim
-          caches:
-            - npm
-          script:
-            - npm ci
-            - npm run build
-          artifacts:
-            - dist/**
-
-      - step:
-          name: Deploy to S3
-          deployment: production
-          script:
-            - pipe: atlassian/aws-s3-deploy:1.6.0
-              variables:
-                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
-                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
-                AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
-                S3_BUCKET: $S3_BUCKET_NAME
-                LOCAL_PATH: dist/
-                DELETE_FLAG: 'true'
-            - pipe: atlassian/aws-cloudfront-invalidate:1.0.0
-              variables:
-                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
-                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
-                AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
-                DISTRIBUTION_ID: $CLOUDFRONT_DISTRIBUTION_ID`
+`
+    - step: &build-node
+        name: Build
+        image: node:${nodeVer}-slim
+        caches:
+          - npm
+        script:
+          - npm ci
+          - npm run build
+        artifacts:
+          - dist/**`
     );
   }
 
-  // ── CDK Deploy ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // CDK STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (hasCdk) {
     const cdkImage = hasTsCdk ? `node:20-slim` : `python:${pythonVer}-slim`;
     const cdkInstall = hasTsCdk
-      ? `            - npm ci
-            - npm install -g aws-cdk`
-      : `            - pip install -r requirements.txt
-            - npm install -g aws-cdk`;
+      ? `          - npm ci
+          - npm install -g aws-cdk`
+      : `          - pip install -r requirements.txt
+          - npm install -g aws-cdk`;
 
     parts.push(
-`      - step:
-          name: CDK Deploy
-          image: ${cdkImage}
-          deployment: production
-          script:
-            - cd devops/cdk
+`
+    - step: &cdk-synth
+        name: CDK Synth
+        image: ${cdkImage}
+        script:
+          - cd devops/cdk
 ${cdkInstall}
-            - cdk deploy --require-approval never${needsDocker ? ' --context imageTag=$BITBUCKET_COMMIT' : ''}`
+          - cdk synth
+
+    - step: &cdk-deploy-staging
+        name: CDK Deploy Staging
+        image: ${cdkImage}
+        deployment: staging
+        script:
+          - cd devops/cdk
+${cdkInstall}
+          - cdk deploy --require-approval never --context environment=staging${needsDocker ? ' --context imageTag=$BITBUCKET_COMMIT' : ''}
+
+    - step: &cdk-deploy-production
+        name: CDK Deploy Production
+        image: ${cdkImage}
+        deployment: production
+        trigger: manual
+        script:
+          - cd devops/cdk
+${cdkInstall}
+          - cdk deploy --require-approval never --context environment=production${needsDocker ? ' --context imageTag=$BITBUCKET_COMMIT' : ''}`
     );
   }
 
-  // ── Terraform Deploy ────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // TERRAFORM STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (hasTf) {
     parts.push(
-`      - step:
-          name: Terraform Plan
-          image: hashicorp/terraform:1.9
-          script:
-            - cd devops/terraform
-            - terraform init
-            - terraform plan -out=tfplan
-          artifacts:
-            - devops/terraform/tfplan
+`
+    - step: &terraform-validate
+        name: Terraform Validate
+        image: hashicorp/terraform:1.9
+        script:
+          - cd devops/terraform
+          - terraform init -backend=false
+          - terraform validate
+          - terraform fmt -check -recursive
 
-      - step:
-          name: Terraform Apply
-          image: hashicorp/terraform:1.9
-          deployment: production
-          trigger: manual
-          script:
-            - cd devops/terraform
-            - terraform init
-            - terraform apply -auto-approve tfplan`
+    - step: &terraform-plan-staging
+        name: Terraform Plan (Staging)
+        image: hashicorp/terraform:1.9
+        script:
+          - cd devops/terraform
+          - terraform init
+          - terraform plan -var="environment=staging" -out=tfplan-staging
+        artifacts:
+          - devops/terraform/tfplan-staging
+
+    - step: &terraform-apply-staging
+        name: Terraform Apply (Staging)
+        image: hashicorp/terraform:1.9
+        deployment: staging
+        script:
+          - cd devops/terraform
+          - terraform init
+          - terraform apply -auto-approve tfplan-staging
+
+    - step: &terraform-plan-production
+        name: Terraform Plan (Production)
+        image: hashicorp/terraform:1.9
+        script:
+          - cd devops/terraform
+          - terraform init
+          - terraform plan -var="environment=production" -out=tfplan-prod
+        artifacts:
+          - devops/terraform/tfplan-prod
+
+    - step: &terraform-apply-production
+        name: Terraform Apply (Production)
+        image: hashicorp/terraform:1.9
+        deployment: production
+        trigger: manual
+        script:
+          - cd devops/terraform
+          - terraform init
+          - terraform apply -auto-approve tfplan-prod
+
+    - step: &terraform-destroy
+        name: Terraform Destroy
+        image: hashicorp/terraform:1.9
+        trigger: manual
+        script:
+          - cd devops/terraform
+          - terraform init
+          - terraform destroy -auto-approve`
     );
   }
 
-  // ── SAM Deploy ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // SAM STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (hasSam) {
     parts.push(
-`      - step:
-          name: SAM Deploy
-          image: public.ecr.aws/sam/build-python${pythonVer}:latest
-          deployment: production
-          script:
-            - sam build
-            - sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --stack-name ${projectName} --capabilities CAPABILITY_IAM`
+`
+    - step: &sam-build
+        name: SAM Build
+        image: public.ecr.aws/sam/build-python${pythonVer}:latest
+        script:
+          - sam build
+        artifacts:
+          - .aws-sam/**
+
+    - step: &sam-deploy-staging
+        name: SAM Deploy Staging
+        image: public.ecr.aws/sam/build-python${pythonVer}:latest
+        deployment: staging
+        script:
+          - sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --stack-name ${projectName}-staging --parameter-overrides Environment=staging --capabilities CAPABILITY_IAM
+
+    - step: &sam-deploy-production
+        name: SAM Deploy Production
+        image: public.ecr.aws/sam/build-python${pythonVer}:latest
+        deployment: production
+        trigger: manual
+        script:
+          - sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --stack-name ${projectName}-production --parameter-overrides Environment=production --capabilities CAPABILITY_IAM`
     );
   }
 
-  // ── ECS Deploy (when no CDK) ────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // ECS DEPLOY STEP DEFINITIONS (when no IaC)
+  // ══════════════════════════════════════════════════════════════════════════
+
   if (isEcs && !hasCdk && !hasTf) {
     parts.push(
-`      - step:
-          name: Deploy to ECS
+`
+    - step: &ecs-deploy-staging
+        name: Deploy to ECS (Staging)
+        deployment: staging
+        script:
+          - pipe: atlassian/aws-ecs-deploy:2.2.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              CLUSTER_NAME: $ECS_CLUSTER_STAGING
+              SERVICE_NAME: $ECS_SERVICE_STAGING
+              FORCE_NEW_DEPLOYMENT: 'true'
+
+    - step: &ecs-deploy-production
+        name: Deploy to ECS (Production)
+        deployment: production
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-ecs-deploy:2.2.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              CLUSTER_NAME: $ECS_CLUSTER_PROD
+              SERVICE_NAME: $ECS_SERVICE_PROD
+              FORCE_NEW_DEPLOYMENT: 'true'`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // S3 + CLOUDFRONT STEP DEFINITIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isS3Cf && isNode && !hasCdk && !hasTf) {
+    parts.push(
+`
+    - step: &s3-deploy-staging
+        name: Deploy to S3 (Staging)
+        deployment: staging
+        script:
+          - pipe: atlassian/aws-s3-deploy:1.6.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              S3_BUCKET: $S3_BUCKET_STAGING
+              LOCAL_PATH: dist/
+              DELETE_FLAG: 'true'
+          - pipe: atlassian/aws-cloudfront-invalidate:1.0.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              DISTRIBUTION_ID: $CLOUDFRONT_DIST_STAGING
+
+    - step: &s3-deploy-production
+        name: Deploy to S3 (Production)
+        deployment: production
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-s3-deploy:1.6.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              S3_BUCKET: $S3_BUCKET_PROD
+              LOCAL_PATH: dist/
+              DELETE_FLAG: 'true'
+          - pipe: atlassian/aws-cloudfront-invalidate:1.0.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              DISTRIBUTION_ID: $CLOUDFRONT_DIST_PROD`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LAMBDA DEPLOY STEP DEFINITIONS (when no IaC)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (isLambdaInfra && !hasCdk && !hasSam && !hasTf) {
+    const pkgImage = isPython ? `python:${pythonVer}-slim` : isNode ? `node:${nodeVer}-slim` : `maven:3.9-eclipse-temurin-${javaVer}`;
+    const pkgScript = isPython
+      ? `          - pip install -r requirements.txt -t ./package/
+          - cp -r *.py ./package/
+          - cd package && zip -r ../function.zip . && cd ..`
+      : isNode
+      ? `          - npm ci
+          - zip -r function.zip . -x "*.git*" "node_modules/.cache/*"`
+      : `          - mvn package -DskipTests -q
+          - cp target/*.jar function.zip`;
+
+    parts.push(
+`
+    - step: &package-lambda
+        name: Package Lambda
+        image: ${pkgImage}
+        script:
+${pkgScript}
+        artifacts:
+          - function.zip
+
+    - step: &lambda-deploy-staging
+        name: Deploy Lambda (Staging)
+        deployment: staging
+        script:
+          - pipe: atlassian/aws-lambda-deploy:1.10.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              FUNCTION_NAME: $LAMBDA_FUNCTION_STAGING
+              ZIP_FILE: function.zip
+
+    - step: &lambda-deploy-production
+        name: Deploy Lambda (Production)
+        deployment: production
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-lambda-deploy:1.10.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+              FUNCTION_NAME: $LAMBDA_FUNCTION_PROD
+              ZIP_FILE: function.zip`
+    );
+  }
+
+  // ── Load Test Step Definition ───────────────────────────────────────────
+  parts.push(
+`
+    - step: &load-test
+        name: Load Test (Staging)
+        image: grafana/k6:latest
+        script:
+          - k6 run tests/load-test.js --vus 10 --duration 60s --env TARGET_URL=$STAGING_URL || true`
+  );
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PIPELINES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  parts.push(`
+pipelines:`);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // DEFAULT PIPELINE (PR / feature branches)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const testStep = isPython ? 'test-python' : isJava ? 'test-java' : isNode ? 'test-node' : isDotnet ? 'test-dotnet' : null;
+
+  parts.push(`
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEFAULT — runs on all branches (PRs, feature branches)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  default:`);
+
+  if (testStep) {
+    parts.push(`    - step: *${testStep}`);
+  }
+
+  if (hasCdk) {
+    parts.push(`    - step: *cdk-synth`);
+  }
+  if (hasTf) {
+    parts.push(`    - step: *terraform-validate`);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MAIN BRANCH PIPELINE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  parts.push(`
+  # ════════════════════════════════════════════════════════════════════════════
+  # MAIN BRANCH — full staging → production pipeline
+  # ════════════════════════════════════════════════════════════════════════════
+
+  branches:
+    main:`);
+
+  // Test
+  if (testStep) {
+    parts.push(`      - step: *${testStep}`);
+  }
+
+  // Build
+  if (needsDocker) {
+    parts.push(`      - step: *build-docker`);
+  }
+  if (isNode && (isS3Cf || isMfe) && !needsDocker) {
+    parts.push(`      - step: *build-node`);
+  }
+
+  // CDK Pipeline
+  if (hasCdk) {
+    parts.push(`      - step: *cdk-synth`);
+    parts.push(`      - step: *cdk-deploy-staging`);
+    if (isEcs) {
+      parts.push(`      - step:
+          name: Reload Staging ECS
+          script:
+            - pipe: atlassian/aws-ecs-deploy:2.2.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+                CLUSTER_NAME: $ECS_CLUSTER_STAGING
+                SERVICE_NAME: $ECS_SERVICE_STAGING
+                FORCE_NEW_DEPLOYMENT: 'true'`);
+    }
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *cdk-deploy-production`);
+    if (isEcs) {
+      parts.push(`      - step:
+          name: Reload Production ECS
           deployment: production
           script:
             - pipe: atlassian/aws-ecs-deploy:2.2.0
@@ -337,44 +602,97 @@ ${cdkInstall}
                 AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
                 AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
                 AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
-                CLUSTER_NAME: $ECS_CLUSTER_NAME
-                SERVICE_NAME: $ECS_SERVICE_NAME
-                FORCE_NEW_DEPLOYMENT: 'true'`
-    );
+                CLUSTER_NAME: $ECS_CLUSTER_PROD
+                SERVICE_NAME: $ECS_SERVICE_PROD
+                FORCE_NEW_DEPLOYMENT: 'true'`);
+    }
   }
 
-  // ── Lambda Deploy (when no CDK/SAM) ─────────────────────────────────────
+  // Terraform Pipeline
+  if (hasTf) {
+    parts.push(`      - step: *terraform-validate`);
+    parts.push(`      - step: *terraform-plan-staging`);
+    parts.push(`      - step: *terraform-apply-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *terraform-plan-production`);
+    parts.push(`      - step: *terraform-apply-production`);
+  }
+
+  // SAM Pipeline
+  if (hasSam) {
+    parts.push(`      - step: *sam-build`);
+    parts.push(`      - step: *sam-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *sam-deploy-production`);
+  }
+
+  // ECS without IaC
+  if (isEcs && !hasCdk && !hasTf) {
+    parts.push(`      - step: *ecs-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *ecs-deploy-production`);
+  }
+
+  // S3 + CloudFront without IaC
+  if (isS3Cf && isNode && !hasCdk && !hasTf) {
+    parts.push(`      - step: *s3-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *s3-deploy-production`);
+  }
+
+  // Lambda without IaC
   if (isLambdaInfra && !hasCdk && !hasSam && !hasTf) {
-    const pkgScript = isPython
-      ? `            - pip install -r requirements.txt -t ./package/
-            - cp -r *.py ./package/
-            - cd package && zip -r ../function.zip . && cd ..`
-      : isNode
-      ? `            - npm ci
-            - zip -r function.zip . -x "*.git*"`
-      : `            - mvn package -DskipTests -q
-            - cp target/*.jar function.zip`;
+    parts.push(`      - step: *package-lambda`);
+    parts.push(`      - step: *lambda-deploy-staging`);
+    parts.push(`      - step: *load-test`);
+    parts.push(`      - step: *lambda-deploy-production`);
+  }
 
-    parts.push(
-`      - step:
-          name: Package Lambda
-          script:
-${pkgScript}
-          artifacts:
-            - function.zip
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUSTOM PIPELINES (manual triggers)
+  // ══════════════════════════════════════════════════════════════════════════
 
+  parts.push(`
+  # ════════════════════════════════════════════════════════════════════════════
+  # CUSTOM PIPELINES — manual triggers
+  # ════════════════════════════════════════════════════════════════════════════
+
+  custom:
+    # Rollback staging to previous CloudFormation state
+    rollback-staging:
       - step:
-          name: Deploy to Lambda
-          deployment: production
+          name: Rollback Staging
           script:
-            - pipe: atlassian/aws-lambda-deploy:1.10.0
+            - pipe: atlassian/aws-cloudformation-deploy:0.21.0
               variables:
                 AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
                 AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
                 AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
-                FUNCTION_NAME: $LAMBDA_FUNCTION_NAME
-                ZIP_FILE: function.zip`
-    );
+                STACK_NAME: ${projectName}Stack-staging
+                COMMAND: rollback-stack
+
+    # Rollback production to previous CloudFormation state
+    rollback-production:
+      - step:
+          name: Rollback Production
+          deployment: production
+          trigger: manual
+          script:
+            - pipe: atlassian/aws-cloudformation-deploy:0.21.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+                STACK_NAME: ${projectName}Stack-production
+                COMMAND: rollback-stack`);
+
+  // Terraform destroy
+  if (hasTf) {
+    parts.push(`
+
+    # Terraform destroy (dangerous!)
+    terraform-destroy:
+      - step: *terraform-destroy`);
   }
 
   return parts.join('\n');
@@ -398,6 +716,6 @@ export const BASIC_PIPELINE_PREVIEW_VARS = {
 export const BASIC_PIPELINE_META = {
   id:          'basic',
   label:       'Basic Pipeline',
-  description: 'Bitbucket Pipelines with test, build, and deploy',
+  description: 'Bitbucket Pipelines with staging, production, and rollbacks',
   fileCount:   1,
 };
