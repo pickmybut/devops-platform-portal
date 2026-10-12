@@ -2,23 +2,23 @@
 GitHub platform service.
 
 File upload strategy:
-  Primary — Git Data API (single commit, fast):
-    1. Create all blobs in parallel (10 workers)
-    2. Wait 3 s for GitHub's distributed backend to replicate blobs
-    3. Create tree + commit + update ref (retry up to 3×)
-  Fallback — Contents API (one call per file, reliable):
-    Used if the Git Data API still fails after retries.
-    Note: .github/workflows/ files require 'workflow' token scope here.
+  Step 1 — Contents API for all non-workflow files (N calls, ~1s each).
+            Only README.md needs a pre-GET (to get its SHA for update).
+            All other files are new, so PUT directly without checking first.
+
+  Step 2 — Git Data API for .github/workflows/ files.
+            After Step 1 the repo has a stable, replicated tree. Using
+            that tree as base_tree makes create_git_tree reliable — no
+            more 404 race conditions from parallel blob creation.
+            The Git Data API has no 'workflow' scope requirement.
 
 Post-creation:
-  - Configures branch protection (non-fatal — needs GitHub Pro for private repos)
+  - Branch protection (non-fatal — requires GitHub Pro for private repos).
 """
 
 import base64
 import logging
 import os
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 import httpx
@@ -43,6 +43,13 @@ class GitHubService(BasePlatformService):
             )
         return Github(self._token)
 
+    def _rest_headers(self) -> dict:
+        return {
+            "Authorization":        f"Bearer {self._token}",
+            "Accept":               "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
     # ── Repository creation ───────────────────────────────────────────────────
 
     def create_repository(
@@ -61,7 +68,7 @@ class GitHubService(BasePlatformService):
             raise ValueError(
                 f"GitHub namespace must be an org login or username, "
                 f"not a number ('{namespace_id}'). "
-                "Please re-select the namespace after choosing the GitHub platform."
+                "Re-select the namespace after choosing the GitHub platform."
             )
 
         auth_user = g.get_user()
@@ -77,14 +84,13 @@ class GitHubService(BasePlatformService):
             name=name,
             description=description,
             private=(visibility == "private"),
-            auto_init=True,          # creates default branch so Git Data API works immediately
+            auto_init=True,
             allow_squash_merge=True,
             allow_rebase_merge=True,
             allow_merge_commit=False,
             delete_branch_on_merge=True,
         )
 
-        # Re-fetch for a clean, fully-authenticated object
         repo = g.get_repo(repo.full_name)
         logger.info("GitHub: repo created — %s", repo.html_url)
 
@@ -99,122 +105,106 @@ class GitHubService(BasePlatformService):
         actual_branch = repo.default_branch
         work_branch   = default_branch or actual_branch
 
-        # Create requested branch if it differs from what auto_init made
         if actual_branch != default_branch:
             init_sha = repo.get_branch(actual_branch).commit.sha
             try:
                 repo.create_git_ref(f"refs/heads/{default_branch}", init_sha)
             except GithubException:
-                pass   # already exists
+                pass
 
-        # Auto-init commit — used as parent so our commit builds on it
-        init_commit = repo.get_git_commit(
-            repo.get_branch(work_branch).commit.sha
+        headers   = self._rest_headers()
+        base_url  = f"https://api.github.com/repos/{namespace_id}/{name}"
+
+        # ── Step 1: Contents API for non-workflow files ───────────────────────
+        # Only README.md (from auto_init) needs a pre-GET to retrieve its SHA.
+        # All other files don't exist yet — PUT directly, no GET needed.
+
+        readme_sha = None
+        check = httpx.get(
+            f"{base_url}/contents/README.md",
+            headers=headers, params={"ref": work_branch}, timeout=10,
         )
+        if check.status_code == 200:
+            readme_sha = check.json().get("sha")
 
-        # ── Primary: Git Data API ─────────────────────────────────────────────
-        # Single commit for all files. Git Data API has no path restrictions —
-        # .github/workflows/ uploads fine here unlike the Contents API.
-        try:
-            def _make_blob(item):
-                path, content = item
-                blob = repo.create_git_blob(content, "utf-8")
-                return path, blob.sha
+        workflow_files: Dict[str, str] = {}
+        uploaded = 0
 
-            tree_elements: List[InputGitTreeElement] = []
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                futures = {
-                    pool.submit(_make_blob, item): item[0]
-                    for item in files.items()
-                }
-                for future in as_completed(futures):
-                    path, sha = future.result()
-                    tree_elements.append(
-                        InputGitTreeElement(path, "100644", "blob", sha=sha)
-                    )
-            logger.info("GitHub: created %d blobs in parallel", len(tree_elements))
+        for path, content in sorted(files.items()):
+            # Workflow files are handled in Step 2 via Git Data API
+            if path.startswith(".github/workflows/"):
+                workflow_files[path] = content
+                continue
 
-            # Wait for GitHub's distributed git backend to replicate all blobs
-            # before the tree creation request references them.
-            time.sleep(3)
+            encoded = base64.b64encode(
+                content.encode("utf-8") if isinstance(content, str) else content
+            ).decode("utf-8")
 
-            # Retry tree creation up to 3 times with exponential backoff
-            tree = None
-            for attempt in range(3):
-                try:
-                    tree = repo.create_git_tree(tree_elements)
-                    break
-                except GithubException as exc:
-                    if exc.status == 404 and attempt < 2:
-                        wait = 3 * (attempt + 1)
-                        logger.warning(
-                            "GitHub: create_git_tree 404 (attempt %d/3) — waiting %ds for replication",
-                            attempt + 1, wait,
-                        )
-                        time.sleep(wait)
-                    else:
-                        raise
-
-            commit = repo.create_git_commit(
-                message="feat: initial scaffold from DevOps Self-Service Portal",
-                tree=tree,
-                parents=[init_commit],
-            )
-            repo.get_git_ref(f"heads/{work_branch}").edit(commit.sha)
-            logger.info(
-                "GitHub: pushed %d files to '%s' (1 commit via Git Data API)",
-                len(files), work_branch,
-            )
-
-        except GithubException as exc:
-            # ── Fallback: Contents API ────────────────────────────────────────
-            # One API call per file. Reliable but slow.
-            # Note: .github/workflows/ requires 'workflow' token scope here.
-            logger.warning(
-                "GitHub: Git Data API failed (%s), falling back to Contents API",
-                exc,
-            )
-            rest_headers = {
-                "Authorization":        f"Bearer {self._token}",
-                "Accept":               "application/vnd.github.v3+json",
-                "X-GitHub-Api-Version": "2022-11-28",
+            payload: dict = {
+                "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                "content": encoded,
+                "branch":  work_branch,
             }
+            if path == "README.md" and readme_sha:
+                payload["sha"] = readme_sha
 
-            for path, content in sorted(files.items()):
-                encoded  = base64.b64encode(
-                    content.encode("utf-8") if isinstance(content, str) else content
-                ).decode("utf-8")
-                file_url = f"https://api.github.com/repos/{namespace_id}/{name}/contents/{path}"
-                check    = httpx.get(file_url, headers=rest_headers,
-                                     params={"ref": work_branch}, timeout=15)
-                payload: dict = {
-                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                    "content": encoded,
-                    "branch":  work_branch,
-                }
-                if check.status_code == 200:
-                    payload["sha"] = check.json()["sha"]
-
-                resp = httpx.put(file_url, headers=rest_headers, json=payload, timeout=30)
-
-                # .github/workflows/ requires 'workflow' scope on the token
-                # when using the Contents API — skip gracefully
-                if resp.status_code in (403, 404) and ".github/workflows/" in path:
-                    logger.warning(
-                        "GitHub: skipping '%s' — Contents API needs 'workflow' scope "
-                        "(add at https://github.com/settings/tokens). "
-                        "Git Data API would have uploaded this file without that scope.",
-                        path,
-                    )
-                    continue
-
-                resp.raise_for_status()
-                logger.debug("GitHub: uploaded '%s'", path)
-
-            logger.info(
-                "GitHub: uploaded %d files to '%s' via Contents API fallback",
-                len(files), work_branch,
+            resp = httpx.put(
+                f"{base_url}/contents/{path}",
+                headers=headers, json=payload, timeout=30,
             )
+
+            if resp.status_code == 422:
+                # File already exists but we don't have its SHA — fetch and retry
+                existing = httpx.get(
+                    f"{base_url}/contents/{path}",
+                    headers=headers, params={"ref": work_branch}, timeout=10,
+                )
+                if existing.status_code == 200:
+                    payload["sha"] = existing.json()["sha"]
+                    resp = httpx.put(
+                        f"{base_url}/contents/{path}",
+                        headers=headers, json=payload, timeout=30,
+                    )
+
+            resp.raise_for_status()
+            uploaded += 1
+            logger.debug("GitHub: uploaded '%s'", path)
+
+        logger.info("GitHub: uploaded %d files to '%s' via Contents API", uploaded, work_branch)
+
+        # ── Step 2: Git Data API for .github/workflows/ files ────────────────
+        # The repo now has a stable, replicated tree. Using it as base_tree
+        # makes create_git_tree reliable — no 404 race conditions.
+        # The Git Data API bypasses the 'workflow' scope restriction.
+        if workflow_files:
+            try:
+                latest_sha    = repo.get_branch(work_branch).commit.sha
+                latest_commit = repo.get_git_commit(latest_sha)
+
+                tree_elements: List[InputGitTreeElement] = []
+                for path, content in workflow_files.items():
+                    blob = repo.create_git_blob(content, "utf-8")
+                    tree_elements.append(
+                        InputGitTreeElement(path, "100644", "blob", sha=blob.sha)
+                    )
+
+                tree = repo.create_git_tree(tree_elements, latest_commit.tree)
+                commit = repo.create_git_commit(
+                    message="feat: add CI/CD workflow files",
+                    tree=tree,
+                    parents=[latest_commit],
+                )
+                repo.get_git_ref(f"heads/{work_branch}").edit(commit.sha)
+                logger.info(
+                    "GitHub: added %d workflow file(s) via Git Data API",
+                    len(workflow_files),
+                )
+            except GithubException as exc:
+                logger.warning(
+                    "GitHub: could not add workflow files (%s). "
+                    "Add 'workflow' scope to your token or push manually.",
+                    exc,
+                )
 
         return {
             "project_id":     str(repo.id),
