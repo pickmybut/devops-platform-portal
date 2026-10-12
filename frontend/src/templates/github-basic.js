@@ -1500,7 +1500,9 @@ ${pulumiSetup}
   }
 
   // ── Feature: security / quality / docker-lint jobs ───────────────────────
-  const secJobs = githubSecurityJobs(feat);
+  // Pass CodeQL language hint based on project type
+  const codeqlLang = isJava ? 'java' : isDotnet ? 'csharp' : isNode ? 'javascript' : isPython ? 'python' : 'javascript';
+  const secJobs = githubSecurityJobs(feat, codeqlLang);
   if (secJobs) parts.push(secJobs);
 
   // ── Feature: Slack notification job (last, needs deploy-production) ──────

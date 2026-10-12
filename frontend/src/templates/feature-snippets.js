@@ -160,8 +160,44 @@ notify-failure:
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Returns security/quality jobs to append to the jobs block. */
-export function githubSecurityJobs(flags) {
+export function githubSecurityJobs(flags, codeqlLanguage = 'javascript') {
   const jobs = [];
+
+  // GitLab SAST → GitHub equivalent is CodeQL
+  if (flags.hasGitLabSast) {
+    jobs.push(
+`
+  # ── CodeQL Analysis (GitHub SAST) ────────────────────────────────────────────
+  # GitHub's built-in SAST — equivalent of GitLab's Security/SAST.gitlab-ci.yml
+  # Requires GitHub Advanced Security (free for public repos)
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${codeqlLanguage}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${codeqlLanguage}`
+    );
+  }
 
   if (flags.hasMendSast) {
     jobs.push(
@@ -216,7 +252,7 @@ export function githubSecurityJobs(flags) {
   if (flags.hasDepScan) {
     jobs.push(
 `
-  # ── Dependency Review ─────────────────────────────────────────────────────────
+  # ── Dependency Review (PRs) ───────────────────────────────────────────────────
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
@@ -230,7 +266,33 @@ export function githubSecurityJobs(flags) {
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
-          comment-summary-in-pr: always`
+          comment-summary-in-pr: always
+
+  # ── Trivy Vulnerability Scan (push to main) ────────────────────────────────
+  trivy-scan:
+    name: Trivy Vulnerability Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif`
     );
   }
 
