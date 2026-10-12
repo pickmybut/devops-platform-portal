@@ -16,6 +16,8 @@ import {
   bitbucketDefaultFeatureSteps,
   bitbucketMainFeatureSteps,
   bitbucketSlackMainStep,
+  bitbucketAiReviewStepDef,
+  bitbucketAiReviewPipelineStep,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -748,6 +750,10 @@ ${pulumiInstall}
   const secDefs = bitbucketSecurityStepDefs(feat);
   if (secDefs) parts.push(secDefs);
 
+  // ── Feature: AI code review step definition ───────────────────────────────
+  const aiDef = bitbucketAiReviewStepDef(feat);
+  if (aiDef) parts.push(aiDef);
+
   // ══════════════════════════════════════════════════════════════════════════
   // PIPELINES
   // ══════════════════════════════════════════════════════════════════════════
@@ -979,6 +985,11 @@ pipelines:`);
 
   const slackStep = bitbucketSlackMainStep(feat);
   if (slackStep) parts.push(slackStep);
+
+  // Feature: AI review runs on PRs (Bitbucket doesn't distinguish PR vs push
+  // at the branches level — add step and note it requires a PR context)
+  const aiStep = bitbucketAiReviewPipelineStep(feat);
+  if (aiStep) parts.push(aiStep);
 
   // ══════════════════════════════════════════════════════════════════════════
   // CUSTOM PIPELINES (manual triggers)

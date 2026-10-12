@@ -13,6 +13,7 @@ import {
   gitlabFeatureIncludes,
   gitlabSecurityJobs,
   gitlabSlackJobs,
+  gitlabAiReviewJob,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -985,6 +986,10 @@ ${pulumiInstall}
   // ── Feature: security + quality jobs ────────────────────────────────────
   const secJobs = gitlabSecurityJobs(feat);
   if (secJobs) parts.push(secJobs);
+
+  // ── Feature: AI code review ──────────────────────────────────────────────
+  const aiReview = gitlabAiReviewJob(feat);
+  if (aiReview) parts.push(aiReview);
 
   // ── Feature: Slack notifications (.post stage) ───────────────────────────
   const slackJobs = gitlabSlackJobs(feat, projectName);

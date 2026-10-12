@@ -769,6 +769,15 @@ export const ADDITIONAL_FEATURES = [
     tagBg: '#fee2e2',
   },
   {
+    id: 'ai-code-review',
+    name: 'AI Code Review',
+    icon: '🤖',
+    description: 'Automated PR/MR review via Amazon Bedrock (Claude) — posts inline comments',
+    tag: 'AI',
+    tagColor: '#7c3aed',
+    tagBg: '#ede9fe',
+  },
+  {
     id: 'slack-notifications',
     name: 'Slack Notifications',
     icon: '💬',

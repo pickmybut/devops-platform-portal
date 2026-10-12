@@ -20,6 +20,7 @@ import {
   parseFeatureFlags,
   codepipelineSecurityBuildCmds,
   codepipelineSlackPostBuild,
+  codepipelineAiReviewCmds,
 } from './feature-snippets.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -237,7 +238,7 @@ ${preBuildCmds.join('\n')}`
   parts.push(
 `  build:
     commands:
-${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}${codepipelineSecurityBuildCmds(feat) ? '\n' + codepipelineSecurityBuildCmds(feat) : ''}`
+${buildCmds.length > 0 ? buildCmds.join('\n') : '      - echo "No build steps configured — select a Project Type"'}${codepipelineSecurityBuildCmds(feat) ? '\n' + codepipelineSecurityBuildCmds(feat) : ''}${codepipelineAiReviewCmds(feat) ? '\n' + codepipelineAiReviewCmds(feat) : ''}`
   );
 
   // ── Post-build phase ────────────────────────────────────────────────────

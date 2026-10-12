@@ -14,6 +14,7 @@ import {
   parseFeatureFlags,
   githubSecurityJobs,
   githubSlackJob,
+  githubAiReviewJob,
   featureRequirementsComment,
 } from './feature-snippets.js';
 
@@ -1504,6 +1505,10 @@ ${pulumiSetup}
   const codeqlLang = isJava ? 'java' : isDotnet ? 'csharp' : isNode ? 'javascript' : isPython ? 'python' : 'javascript';
   const secJobs = githubSecurityJobs(feat, codeqlLang);
   if (secJobs) parts.push(secJobs);
+
+  // ── Feature: AI code review ──────────────────────────────────────────────
+  const aiReview = githubAiReviewJob(feat);
+  if (aiReview) parts.push(aiReview);
 
   // ── Feature: Slack notification job (last, needs deploy-production) ──────
   const slackJob = githubSlackJob(feat, projectName);

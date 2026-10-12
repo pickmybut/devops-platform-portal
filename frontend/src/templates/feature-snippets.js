@@ -22,13 +22,14 @@
 export function parseFeatureFlags(features = []) {
   const has = (id) => Array.isArray(features) && features.includes(id);
   return {
-    hasMendSast:   has('mend-sast'),
-    hasMendSca:    has('mend-sca'),
-    hasGitLabSast: has('gitlab-sast'),
-    hasDepScan:    has('dependency-scan'),
-    hasSlack:      has('slack-notifications'),
-    hasReadme:     has('readme'),  // file-only, no pipeline injection
-    hasAny:        features.length > 0,
+    hasMendSast:      has('mend-sast'),
+    hasMendSca:       has('mend-sca'),
+    hasGitLabSast:    has('gitlab-sast'),
+    hasDepScan:       has('dependency-scan'),
+    hasSlack:         has('slack-notifications'),
+    hasAiCodeReview:  has('ai-code-review'),
+    hasReadme:        has('readme'),  // file-only, no pipeline injection
+    hasAny:           features.length > 0,
   };
 }
 
@@ -490,4 +491,213 @@ export function featureRequirementsComment(flags, platformId) {
   return reqs.length
     ? `#\n# Additional feature requirements:\n${reqs.join('\n')}`
     : '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI CODE REVIEW  ──  Amazon Bedrock (Claude) PR/MR review snippets
+//
+// Uses the Converse API with:
+//   modelId   : us.anthropic.claude-sonnet-4-6  (cross-region, higher availability)
+//   maxTokens : 1024  (explicit — avoids silently reserving 64K quota)
+//
+// Only runs on PR / MR events — never on branch pushes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Shared Python core: gets diff, calls Bedrock Converse API, stores REVIEW_BODY
+const AI_REVIEW_PYTHON_CORE = `\
+import boto3, json, os, sys, subprocess
+
+# 1. Collect the diff
+diff = subprocess.getoutput(
+    "git diff HEAD~1 HEAD -- . "
+    "':(exclude)*.lock' ':(exclude)package-lock.json' "
+    "':(exclude)*.min.js' ':(exclude)dist/'"
+).strip()
+
+if not diff:
+    print("No diff to review — skipping AI review.")
+    sys.exit(0)
+
+MAX = 8000
+if len(diff) > MAX:
+    diff = diff[:MAX] + "\\n\\n... (diff truncated to 8 000 chars)"
+
+# 2. Call Amazon Bedrock — Converse API
+client = boto3.client(
+    "bedrock-runtime",
+    region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+)
+
+prompt = (
+    "You are a senior software engineer reviewing a pull request.\\n"
+    "Analyse the diff and provide a concise review covering:\\n"
+    "- **Bugs & Logic Errors** — potential runtime errors or wrong logic\\n"
+    "- **Security Issues** — injection, secrets exposure, auth flaws\\n"
+    "- **Performance** — inefficient operations or bottlenecks\\n"
+    "- **Code Quality** — readability, naming, structure, best practices\\n"
+    "- **Suggestions** — specific, actionable improvements\\n\\n"
+    "Be direct and concise. Format as Markdown. Skip praise.\\n\\n"
+    "\`\`\`diff\\n" + diff + "\\n\`\`\`"
+)
+
+response = client.converse(
+    modelId="us.anthropic.claude-sonnet-4-6",
+    messages=[{"role": "user", "content": [{"text": prompt}]}],
+    inferenceConfig={"maxTokens": 1024},
+)
+
+review = response["output"]["message"]["content"][0]["text"]
+REVIEW_BODY = (
+    "## \\U0001f916 AI Code Review\\n\\n"
+    + review
+    + "\\n\\n---\\n*Powered by Amazon Bedrock \\u2014 Claude Sonnet 4.6*"
+)
+print(REVIEW_BODY)
+`;
+
+// ── GitLab CI job ─────────────────────────────────────────────────────────────
+
+export function gitlabAiReviewJob(flags) {
+  if (!flags.hasAiCodeReview) return '';
+  return `
+# ── AI Code Review (Amazon Bedrock) ──────────────────────────────────────────
+# Runs on MRs only.
+# Required: GITLAB_API_TOKEN (project token with api scope) + AWS credentials
+ai-code-review:
+  stage: Test
+  image: python:3.12-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  variables:
+    AWS_DEFAULT_REGION: eu-west-2
+  script:
+    - pip install boto3 requests --quiet
+    - |
+      python3 - << 'PYEOF'
+${AI_REVIEW_PYTHON_CORE}
+      # 3. Post review as MR note
+      import requests as req
+      resp = req.post(
+          os.environ["CI_SERVER_URL"] + "/api/v4/projects/"
+          + os.environ["CI_PROJECT_ID"] + "/merge_requests/"
+          + os.environ["CI_MERGE_REQUEST_IID"] + "/notes",
+          headers={"PRIVATE-TOKEN": os.environ["GITLAB_API_TOKEN"]},
+          json={"body": REVIEW_BODY},
+          timeout=15,
+      )
+      resp.raise_for_status()
+      print("AI review posted to MR #" + os.environ["CI_MERGE_REQUEST_IID"])
+      PYEOF
+  allow_failure: true`;
+}
+
+// ── GitHub Actions job ────────────────────────────────────────────────────────
+
+export function githubAiReviewJob(flags) {
+  if (!flags.hasAiCodeReview) return '';
+  return `
+  # ── AI Code Review (Amazon Bedrock) ──────────────────────────────────────────
+  # Runs on PRs only. Requires AWS_ROLE_ARN with bedrock:Converse permission.
+  ai-code-review:
+    name: AI Code Review (Bedrock)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-region: \${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install boto3 requests --quiet
+
+      - name: AI code review
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: \${{ github.event.pull_request.number }}
+          REPO: \${{ github.repository }}
+        run: |
+          python3 - << 'PYEOF'
+${AI_REVIEW_PYTHON_CORE}
+          # 3. Post review as PR comment
+          import requests as req
+          resp = req.post(
+              "https://api.github.com/repos/" + os.environ["REPO"]
+              + "/issues/" + os.environ["PR_NUMBER"] + "/comments",
+              headers={
+                  "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                  "Accept": "application/vnd.github.v3+json",
+              },
+              json={"body": REVIEW_BODY},
+              timeout=15,
+          )
+          resp.raise_for_status()
+          print("AI review posted to PR #" + os.environ["PR_NUMBER"])
+          PYEOF
+        continue-on-error: true`;
+}
+
+// ── Bitbucket step definitions ────────────────────────────────────────────────
+
+export function bitbucketAiReviewStepDef(flags) {
+  if (!flags.hasAiCodeReview) return '';
+  return `
+    - step: &ai-code-review
+        name: AI Code Review (Bedrock)
+        image: python:3.12-slim
+        script:
+          - pip install boto3 requests --quiet
+          - |
+            python3 - << 'PYEOF'
+${AI_REVIEW_PYTHON_CORE}
+            # 3. Post review to Bitbucket PR
+            import requests as req
+            resp = req.post(
+                "https://api.bitbucket.org/2.0/repositories/"
+                + os.environ["BITBUCKET_WORKSPACE"] + "/"
+                + os.environ["BITBUCKET_REPO_SLUG"]
+                + "/pullrequests/" + os.environ["BITBUCKET_PR_ID"] + "/comments",
+                headers={"Authorization": "Bearer " + os.environ["BITBUCKET_ACCESS_TOKEN"]},
+                json={"content": {"raw": REVIEW_BODY}},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            print("AI review posted to PR #" + os.environ["BITBUCKET_PR_ID"])
+            PYEOF`;
+}
+
+export function bitbucketAiReviewPipelineStep(flags) {
+  return flags.hasAiCodeReview ? `      - step: *ai-code-review` : '';
+}
+
+// ── CodePipeline — write review to artifact (no native PR concept) ────────────
+
+export function codepipelineAiReviewCmds(flags) {
+  if (!flags.hasAiCodeReview) return '';
+  return `
+      - echo "Running AI code review..."
+      - pip install boto3 --quiet
+      - |
+        python3 - << 'PYEOF'
+${AI_REVIEW_PYTHON_CORE}
+        with open("ai-code-review.md", "w") as f:
+            f.write(REVIEW_BODY)
+        print("AI review saved to ai-code-review.md")
+        PYEOF`;
 }
