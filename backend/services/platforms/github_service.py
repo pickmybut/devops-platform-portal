@@ -73,16 +73,24 @@ class GitHubService(BasePlatformService):
             except GithubException:
                 owner = auth_user
 
-        repo = owner.create_repo(
-            name=name,
-            description=description,
-            private=(visibility == "private"),
-            auto_init=True,          # creates the default branch immediately
-            allow_squash_merge=True,
-            allow_rebase_merge=True,
-            allow_merge_commit=False,
-            delete_branch_on_merge=True,
-        )
+        try:
+            repo = owner.create_repo(
+                name=name,
+                description=description,
+                private=(visibility == "private"),
+                auto_init=True,
+                allow_squash_merge=True,
+                allow_rebase_merge=True,
+                allow_merge_commit=False,
+                delete_branch_on_merge=True,
+            )
+        except GithubException as exc:
+            if exc.status == 403 and "secondary rate limit" in str(exc.data).lower():
+                raise ValueError(
+                    "GitHub secondary rate limit — too many repos created recently. "
+                    "Wait 5–10 minutes and try again. This only happens during rapid testing."
+                ) from exc
+            raise
 
         # Re-fetch for a clean, fully-authenticated object
         repo = g.get_repo(repo.full_name)
