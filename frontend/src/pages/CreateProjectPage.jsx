@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import useAppStore from '../store/useAppStore';
 import ProjectTypeSelector from '../components/ProjectTypeSelector';
 import TemplateCard from '../components/TemplateCard';
@@ -19,6 +19,68 @@ import {
 import { NAMESPACES as FALLBACK_NAMESPACES } from '../data/mockData';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
+// ── Resizable Divider ─────────────────────────────────────────────────────────
+const ResizableDivider = ({ onResize, minLeft = 400, minRight = 300 }) => {
+  const dividerRef = useRef(null);
+  const isDragging = useRef(false);
+
+  const handleMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isDragging.current) return;
+      
+      const container = dividerRef.current?.parentElement;
+      if (!container) return;
+      
+      const containerRect = container.getBoundingClientRect();
+      const newLeftWidth = e.clientX - containerRect.left;
+      const containerWidth = containerRect.width;
+      const newRightWidth = containerWidth - newLeftWidth - 12; // 12px for divider + gaps
+      
+      // Enforce minimum widths
+      if (newLeftWidth >= minLeft && newRightWidth >= minRight) {
+        onResize(newRightWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [onResize, minLeft, minRight]);
+
+  return (
+    <div
+      ref={dividerRef}
+      onMouseDown={handleMouseDown}
+      className="group flex-shrink-0 w-2 cursor-col-resize flex items-center justify-center
+        hover:bg-indigo-100 active:bg-indigo-200 rounded-full transition-colors mx-1"
+      style={{ height: 'calc(100vh - 96px)' }}
+      title="Drag to resize panels"
+    >
+      <div className="w-0.5 h-16 bg-slate-300 group-hover:bg-indigo-400 
+        group-active:bg-indigo-500 rounded-full transition-colors" />
+    </div>
+  );
+};
 
 // Per-platform field labels + URL preview builder
 const PLATFORM_FIELD_CONFIG = {
@@ -827,6 +889,9 @@ const CreateProjectPage = () => {
   const [loading, setLoading] = useState(false);
   const [createError, setCreateError] = useState(null);
 
+  // ── Resizable panel width ─────────────────────────────────────────────────
+  const [previewWidth, setPreviewWidth] = useState(460);
+
   // ── Dynamic namespaces — reload whenever platform changes ─────────────────
   const [NAMESPACES, setNAMESPACES] = useState(FALLBACK_NAMESPACES);
   const [namespacesLoading, setNamespacesLoading] = useState(false);
@@ -987,10 +1052,10 @@ const CreateProjectPage = () => {
   return (
     <>
       {/* ── Two-column layout ──────────────────────────────────────────────── */}
-      <div className="flex gap-6 items-start">
+      <div className="flex items-start">
 
         {/* ── LEFT: form ─────────────────────────────────────────────────── */}
-        <div className="min-w-0 flex-1 space-y-5">
+        <div className="min-w-0 flex-1 space-y-5" style={{ marginRight: '0.5rem' }}>
 
           {/* Template categories card */}
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-7">
@@ -1274,9 +1339,18 @@ const CreateProjectPage = () => {
           </div>
         </div>
 
+        {/* ── Resizable Divider ─────────────────────────────────────────────── */}
+        <ResizableDivider 
+          onResize={setPreviewWidth} 
+          minLeft={450} 
+          minRight={320} 
+        />
+
         {/* ── RIGHT: contextual preview panel ───────────────────────────── */}
-        <div className="w-[460px] flex-shrink-0 sticky top-6"
-          style={{ height: 'calc(100vh - 96px)' }}>
+        <div 
+          className="flex-shrink-0 sticky top-6"
+          style={{ width: `${previewWidth}px`, height: 'calc(100vh - 96px)' }}
+        >
 
           {/* Nothing interacted yet */}
           {activeSection === null && <EmptyPreviewPanel />}
