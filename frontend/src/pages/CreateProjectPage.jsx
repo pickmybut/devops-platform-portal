@@ -674,6 +674,18 @@ const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreview
     return Array.from(fileMap.values());
   }, [previewFiles, iacPreviewFiles, cicdPreviewFiles]);
 
+  // Determine the CI/CD pipeline file path to show by default
+  const pipelineFilePath = useMemo(() => {
+    if (!form.platform?.id || !form.cicd || form.cicd.id === 'none') return null;
+    const map = {
+      gitlab:             '.gitlab-ci.yml',
+      github:             '.github/workflows/ci.yml',
+      bitbucket:          'bitbucket-pipelines.yml',
+      'aws-codepipeline': 'buildspec.yml',
+    };
+    return map[form.platform.id] ?? null;
+  }, [form.platform?.id, form.cicd]);
+
   // Group files by source for summary
   const summary = [
     form.projectType && previewFiles.length > 0 && {
@@ -738,18 +750,20 @@ const CombinedPreviewPanel = ({ form, previewFiles, iacPreviewFiles, cicdPreview
         projectType={form.projectType}
       />
 
-      {/* File tree */}
+      {/* File tree — pipeline YAML pre-selected by default */}
       <div className="flex-1 min-h-0">
         <TemplatePreview
           files={allFiles}
           projectName={projectName}
           fillHeight
+          defaultPath={pipelineFilePath}
         />
       </div>
     </div>
   );
 };
 
+// ── Right panel: IaC / CI-CD code preview ─────────────────────────────────────
 // ── Right panel: IaC / CI-CD code preview ─────────────────────────────────────
 const SectionCodePreview = ({ preview }) => {
   const files = [
@@ -829,7 +843,8 @@ const CreateProjectPage = () => {
 
   // ── Features search + pagination ──────────────────────────────────────────
   const [featureSearch, setFeatureSearch] = useState('');
-  const [showAllFeatures, setShowAllFeatures] = useState(false);
+  const [featurePage, setFeaturePage] = useState(1);
+  const FEATURES_PER_PAGE = 8;
 
   // ── Dynamic namespaces — reload whenever platform changes ─────────────────
   const [NAMESPACES, setNAMESPACES] = useState([]);
@@ -1239,7 +1254,7 @@ const CreateProjectPage = () => {
                 <input
                   type="text"
                   value={featureSearch}
-                  onChange={(e) => { setFeatureSearch(e.target.value); setShowAllFeatures(true); }}
+                  onChange={(e) => { setFeatureSearch(e.target.value); setFeaturePage(1); }}
                   placeholder="Search features…"
                   className="w-full rounded-lg border border-slate-200 pl-8 pr-3 py-2
                     text-[12.5px] text-slate-700 outline-none transition
@@ -1247,14 +1262,14 @@ const CreateProjectPage = () => {
                 />
                 {featureSearch && (
                   <button
-                    onClick={() => { setFeatureSearch(''); setShowAllFeatures(false); }}
+                    onClick={() => { setFeatureSearch(''); setFeaturePage(1); }}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400
                       hover:text-slate-600 text-[11px]"
                   >✕</button>
                 )}
               </div>
 
-              {/* Feature grid */}
+              {/* Feature grid — 8 per page */}
               {(() => {
                 const filtered = ADDITIONAL_FEATURES.filter((f) =>
                   !featureSearch ||
@@ -1262,11 +1277,9 @@ const CreateProjectPage = () => {
                   f.description.toLowerCase().includes(featureSearch.toLowerCase()) ||
                   f.tag.toLowerCase().includes(featureSearch.toLowerCase())
                 );
-                const INITIAL_COUNT = 4;
-                const visible = (featureSearch || showAllFeatures)
-                  ? filtered
-                  : filtered.slice(0, INITIAL_COUNT);
-                const hiddenCount = filtered.length - INITIAL_COUNT;
+                const totalPages = Math.max(1, Math.ceil(filtered.length / FEATURES_PER_PAGE));
+                const page = Math.min(featurePage, totalPages);
+                const visible = filtered.slice((page - 1) * FEATURES_PER_PAGE, page * FEATURES_PER_PAGE);
 
                 return (
                   <>
@@ -1290,20 +1303,29 @@ const CreateProjectPage = () => {
                       </div>
                     )}
 
-                    {/* Show more / less toggle */}
-                    {!featureSearch && hiddenCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setShowAllFeatures(v => !v)}
-                        className="mt-2.5 w-full rounded-lg border border-slate-200
-                          py-1.5 text-[12px] font-medium text-slate-500
-                          hover:bg-slate-50 hover:text-indigo-600 transition-colors"
-                      >
-                        {showAllFeatures
-                          ? '← Show less'
-                          : `Show ${hiddenCount} more feature${hiddenCount !== 1 ? 's' : ''} →`
-                        }
-                      </button>
+                    {/* Pagination: page numbers bottom-right */}
+                    {totalPages > 1 && (
+                      <div className="mt-2.5 flex items-center justify-between">
+                        <span className="text-[11px] text-slate-400">
+                          {filtered.length} features · page {page} of {totalPages}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => setFeaturePage(p)}
+                              className={`w-6 h-6 rounded text-[11px] font-semibold transition-colors ${
+                                p === page
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'text-slate-500 hover:bg-slate-100 hover:text-indigo-600'
+                              }`}
+                            >
+                              {p}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </>
                 );

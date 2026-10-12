@@ -134,17 +134,21 @@ const FileTreeNode = ({ node, selectedPath, onSelect, depth = 0 }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────────
-const TemplatePreview = ({ files, projectName, fillHeight = false }) => {
+const TemplatePreview = ({ files, projectName, fillHeight = false, defaultPath = null }) => {
   const [selected, setSelected] = useState(null);
   const [copied, setCopied]     = useState(false);
 
   const tree = useMemo(() => buildTree(files), [files]);
 
-  // Auto-select the first non-empty file
+  // Auto-select: prefer defaultPath, fall back to first non-empty file
   useEffect(() => {
+    if (defaultPath) {
+      const target = files.find((f) => f.path === defaultPath);
+      if (target) { setSelected(target); return; }
+    }
     const first = files.find((f) => f.content && f.path !== 'apps/__init__.py');
     if (first) setSelected(first);
-  }, [files]);
+  }, [files, defaultPath]);
 
   const handleCopy = () => {
     if (!selected?.content) return;
