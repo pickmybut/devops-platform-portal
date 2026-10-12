@@ -105,16 +105,20 @@ class GitHubService(BasePlatformService):
             except GithubException:
                 pass   # already exists
 
-        # Auto-init commit — used as parent and as base_tree
+        # Brief pause — give GitHub's distributed backend time to propagate
+        # the auto-init commit across all git servers before we reference it.
+        import time
+        time.sleep(2)
+
+        # Auto-init commit — used as parent for clean history
         init_commit = repo.get_git_commit(
             repo.get_branch(work_branch).commit.sha
         )
 
         # ── Single commit for all files via Git Data API ───────────────────────
-        # Using content= mode: GitHub creates each blob atomically inside the
-        # tree operation on the same server. No separate create_git_blob() calls,
-        # no cross-server replication race, no 'workflow' scope requirement.
-        # 3 API calls total: create_git_tree + create_git_commit + edit ref.
+        # content= mode: GitHub creates blobs atomically inside create_git_tree.
+        # No base_tree — creates a fresh tree with ONLY our files, avoiding any
+        # cross-server SHA lookup for the auto-init tree (which causes 404).
         tree_elements: List[InputGitTreeElement] = [
             InputGitTreeElement(
                 path, "100644", "blob",
@@ -123,7 +127,7 @@ class GitHubService(BasePlatformService):
             for path, content in files.items()
         ]
 
-        tree = repo.create_git_tree(tree_elements, init_commit.tree)
+        tree = repo.create_git_tree(tree_elements)  # no base_tree
         commit = repo.create_git_commit(
             message="feat: initial scaffold from DevOps Self-Service Portal",
             tree=tree,
