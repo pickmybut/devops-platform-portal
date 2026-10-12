@@ -10,3 +10,5 @@ venv/
 htmlcov/
 .coverage
 dist/
+portal.db
+*.db
