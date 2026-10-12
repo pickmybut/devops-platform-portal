@@ -1217,12 +1217,28 @@ const CreateProjectPage = () => {
             <CategorySection
               step={6} icon={CATEGORIES[5].icon} label={CATEGORIES[5].label}
               description={CATEGORIES[5].description}
+              active={activeSection === 'features'}
+              onActivate={() => activateSection('features')}
             >
+              {/* Hint when no CI/CD pipeline is selected */}
+              {form.features.length > 0 && (!form.cicd || form.cicd.id === 'none') && (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <p className="text-[11.5px] text-amber-700">
+                    💡 Select a <strong>CI/CD Pipeline</strong> in step 5 to inject these features into your pipeline.
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 {ADDITIONAL_FEATURES.map((f) => (
                   <FeatureCheckbox key={f.id} feature={f}
                     checked={form.features.includes(f.id)}
-                    onToggle={toggleFeature}
+                    onToggle={(id) => {
+                      toggleFeature(id);
+                      // Navigate to the CI/CD preview (or summary) so user sees the injection
+                      if (form.cicd && form.cicd.id !== 'none') {
+                        activateSection('cicd');
+                      }
+                    }}
                   />
                 ))}
               </div>
@@ -1511,6 +1527,43 @@ const CreateProjectPage = () => {
               cicdPreviewFiles={cicdPreviewFiles}
               projectName={form.repoName.trim() || (templateDef?.previewVars?.projectName ?? 'my-project')}
             />
+          )}
+
+          {/* ── Additional Features — show CI/CD preview if pipeline selected ── */}
+          {activeSection === 'features' && (
+            <>
+              {(!form.cicd || form.cicd.id === 'none') && (
+                <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl
+                  border-2 border-dashed border-amber-200 bg-amber-50/50 p-8 text-center">
+                  <span className="text-3xl">💡</span>
+                  <p className="text-[13px] font-semibold text-amber-700">No pipeline yet</p>
+                  <p className="text-[12px] text-amber-600 max-w-[240px] leading-relaxed">
+                    Select a <strong>CI/CD Pipeline</strong> in step 5 to see your chosen features injected into the pipeline.
+                  </p>
+                </div>
+              )}
+              {form.cicd && form.cicd.id !== 'none' && cicdTemplateDef && (
+                <div className="flex h-full flex-col gap-2">
+                  <div className="flex-shrink-0 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2">
+                    <p className="text-[11.5px] font-semibold text-indigo-700">
+                      ✨ Features injected into {form.platform?.name ?? 'CI'} pipeline
+                    </p>
+                    {form.features.length === 0 && (
+                      <p className="text-[11px] text-indigo-500 mt-0.5">
+                        Select a feature above to see it appear in the generated pipeline file.
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <TemplatePreview
+                      files={cicdPreviewFiles}
+                      projectName={form.repoName.trim() || cicdTemplateDef.previewVars.projectName}
+                      fillHeight
+                    />
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       );

@@ -115,7 +115,7 @@ mend-sca:
     jobs.push(
 `# ── Dockerfile Lint ─────────────────────────────────────────────────────────
 dockerfile-lint:
-  stage: Build
+  stage: Test
   image: hadolint/hadolint:latest-debian
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
