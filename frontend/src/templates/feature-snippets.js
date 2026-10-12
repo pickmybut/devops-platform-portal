@@ -19,7 +19,7 @@
 // Feature flag parser — call this at the top of each generate() function
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function parseFeatureFlags(features = [], needsDocker = false) {
+export function parseFeatureFlags(features = []) {
   const has = (id) => Array.isArray(features) && features.includes(id);
   return {
     hasMendSast:   has('mend-sast'),
@@ -27,9 +27,6 @@ export function parseFeatureFlags(features = [], needsDocker = false) {
     hasGitLabSast: has('gitlab-sast'),
     hasDepScan:    has('dependency-scan'),
     hasSlack:      has('slack-notifications'),
-    // Docker lint only added when the feature is selected AND no container build already in pipeline
-    hasDockerLint: has('docker') && !needsDocker,
-    hasUnitTests:  has('unit-tests'),
     hasReadme:     has('readme'),  // file-only, no pipeline injection
     hasAny:        features.length > 0,
   };
@@ -111,51 +108,9 @@ mend-sca:
     );
   }
 
-  if (flags.hasDockerLint) {
-    jobs.push(
-`# ── Dockerfile Lint ─────────────────────────────────────────────────────────
-dockerfile-lint:
-  stage: Test
-  image: hadolint/hadolint:latest-debian
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH'
-      when: on_success
-    - when: never
-  script:
-    - hadolint Dockerfile --no-fail
-  allow_failure: true`
-    );
-  }
-
-  if (flags.hasUnitTests) {
-    jobs.push(
-`# ── Coverage Gate ───────────────────────────────────────────────────────────
-coverage-gate:
-  stage: Test
-  image: python:3.12-slim
-  needs: []
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: on_success
-    - when: never
-  script:
-    - echo "Coverage threshold check — ensure tests produce coverage.xml before this job"
-    - pip install coverage --quiet
-    - |
-      COVERAGE=$(python -c "import xml.etree.ElementTree as ET; t=ET.parse('coverage.xml'); print(round(float(t.getroot().get('line-rate'))*100))" 2>/dev/null || echo 0)
-      echo "Coverage: $COVERAGE%"
-      if [ "$COVERAGE" -lt "80" ]; then
-        echo "Coverage $COVERAGE% is below the 80% threshold"
-        exit 1
-      fi
-  allow_failure: true`
-    );
+  if (flags.hasDepScan) {
+    // GitLab built-in Dependency Scanning is handled via include: at the top.
+    // No additional job needed here — the template adds the jobs automatically.
   }
 
   return jobs.join('\n\n');
@@ -279,50 +234,6 @@ export function githubSecurityJobs(flags) {
     );
   }
 
-  if (flags.hasDockerLint) {
-    jobs.push(
-`
-  # ── Dockerfile Lint ───────────────────────────────────────────────────────────
-  dockerfile-lint:
-    name: Dockerfile Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Lint Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
-          failure-threshold: warning`
-    );
-  }
-
-  if (flags.hasUnitTests) {
-    jobs.push(
-`
-  # ── Coverage Gate ─────────────────────────────────────────────────────────────
-  coverage-gate:
-    name: Coverage Gate (≥80%)
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download coverage report
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage
-        continue-on-error: true
-      - name: Check coverage threshold
-        run: |
-          if [ -f coverage.xml ]; then
-            COVERAGE=$(python3 -c "import xml.etree.ElementTree as ET; t=ET.parse('coverage.xml'); print(round(float(t.getroot().get('line-rate'))*100))" 2>/dev/null || echo 0)
-            echo "Coverage: $COVERAGE%"
-            [ "$COVERAGE" -ge 80 ] || { echo "Coverage $COVERAGE% < 80% threshold"; exit 1; }
-          else
-            echo "No coverage.xml found — skipping gate"
-          fi`
-    );
-  }
-
   return jobs.join('');
 }
 
@@ -405,32 +316,6 @@ export function bitbucketSecurityStepDefs(flags) {
     );
   }
 
-  if (flags.hasDockerLint) {
-    defs.push(
-`
-    - step: &dockerfile-lint
-        name: Dockerfile Lint
-        image: hadolint/hadolint:latest-debian
-        script:
-          - hadolint Dockerfile --no-fail`
-    );
-  }
-
-  if (flags.hasUnitTests) {
-    defs.push(
-`
-    - step: &coverage-gate
-        name: Coverage Gate (>=80%)
-        image: python:3.12-slim
-        script:
-          - pip install coverage --quiet
-          - |
-            COVERAGE=$(python -c "import xml.etree.ElementTree as ET; t=ET.parse('coverage.xml'); print(round(float(t.getroot().get('line-rate'))*100))" 2>/dev/null || echo 0)
-            echo "Coverage: $COVERAGE%"
-            if [ "$COVERAGE" -lt "80" ]; then echo "Coverage below 80% threshold"; exit 1; fi`
-    );
-  }
-
   if (flags.hasSlack) {
     defs.push(
 `
@@ -455,8 +340,6 @@ export function bitbucketDefaultFeatureSteps(flags) {
   if (flags.hasMendSast)    steps.push(`    - step: *mend-sast`);
   if (flags.hasMendSca)     steps.push(`    - step: *mend-sca`);
   if (flags.hasDepScan)     steps.push(`    - step: *dependency-scan`);
-  if (flags.hasDockerLint)  steps.push(`    - step: *dockerfile-lint`);
-  if (flags.hasUnitTests)   steps.push(`    - step: *coverage-gate`);
   return steps.join('\n');
 }
 
@@ -466,8 +349,6 @@ export function bitbucketMainFeatureSteps(flags) {
   if (flags.hasMendSast)    steps.push(`      - step: *mend-sast`);
   if (flags.hasMendSca)     steps.push(`      - step: *mend-sca`);
   if (flags.hasDepScan)     steps.push(`      - step: *dependency-scan`);
-  if (flags.hasDockerLint)  steps.push(`      - step: *dockerfile-lint`);
-  if (flags.hasUnitTests)   steps.push(`      - step: *coverage-gate`);
   return steps.join('\n');
 }
 
@@ -504,26 +385,6 @@ export function codepipelineSecurityBuildCmds(flags) {
         if command -v dependency-check.sh &>/dev/null; then
           dependency-check.sh --scan . --format HTML --out dependency-check-report || true
         fi`
-    );
-  }
-
-  if (flags.hasDockerLint) {
-    cmds.push(
-`      - echo "Linting Dockerfile..."
-      - |
-        if [ -f Dockerfile ]; then
-          docker run --rm -i hadolint/hadolint:latest-debian hadolint - < Dockerfile || true
-        fi`
-    );
-  }
-
-  if (flags.hasUnitTests) {
-    cmds.push(
-`      - echo "Checking coverage threshold..."
-      - |
-        COVERAGE=$(python3 -c "import xml.etree.ElementTree as ET; t=ET.parse('coverage.xml'); print(round(float(t.getroot().get('line-rate'))*100))" 2>/dev/null || echo 0)
-        echo "Coverage: $COVERAGE%"
-        [ "$COVERAGE" -ge 80 ] || echo "WARNING: Coverage $COVERAGE% is below 80% threshold"`
     );
   }
 

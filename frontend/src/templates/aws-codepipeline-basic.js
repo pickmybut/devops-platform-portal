@@ -60,7 +60,7 @@ function generateBuildspec({ projectName, appName, projectType, iac, infra, proj
   const needsDocker   = isEcs;
 
   // ── Feature flags ─────────────────────────────────────────────────────────
-  const feat = parseFeatureFlags(features, needsDocker);
+  const feat = parseFeatureFlags(features);
 
   // ── Config values ───────────────────────────────────────────────────────
   const pythonVer  = cfg.pythonVersion  ?? '3.14';
