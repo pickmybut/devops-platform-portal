@@ -1,17 +1,25 @@
 """
 GitHub platform service.
 
-File upload: GitHub Contents API (PUT /repos/{owner}/{repo}/contents/{path}).
-  - Works immediately on freshly-created repos, no timing issues.
-  - Creates one commit per file (N commits for N files).
-  - All files including .github/workflows/ — the Contents API allows workflow
-    files when the token has 'workflow' scope. Without it, those files are
-    skipped with a clear warning.
+File upload — two-phase approach for a single clean commit:
 
-Note on git/trees (single-commit approach):
-  GitHub's low-level Git Data API (/git/trees) returns 404 for ~2 minutes
-  after repo creation while the git backend initialises. The Contents API
-  uses a higher-level layer that bypasses this delay.
+  Phase 1: Contents API for all non-workflow files.
+    Works immediately on fresh repos, no timing issues.
+    N files → N commits (temporary staging commits).
+
+  Phase 2: Squash into one orphan commit.
+    a. POST /git/commits with latest tree SHA, parents=[] → instant!
+       (POST /git/commits has no init delay unlike POST /git/trees)
+    b. PATCH /git/refs force-update → branch points to single clean commit.
+
+  Workflow files (.github/workflows/):
+    Need POST /git/trees (base_tree + new file), which has a ~2-minute
+    init delay on fresh repos. We retry for up to 90 s after Phase 1.
+    If git/trees becomes available: add workflow files into the squash tree.
+    If it times out: fall back to Contents API for workflow files (skips
+    if token lacks 'workflow' scope, adds a separate commit otherwise).
+
+Result: repo with 1 commit containing all scaffold files.
 
 Post-creation:
   - Branch protection (non-fatal — requires GitHub Pro for private repos).
@@ -20,6 +28,7 @@ Post-creation:
 import base64
 import logging
 import os
+import time
 from typing import Dict, List
 
 import httpx
@@ -44,7 +53,7 @@ class GitHubService(BasePlatformService):
             )
         return Github(self._token)
 
-    def _rest_headers(self) -> dict:
+    def _hdrs(self) -> dict:
         return {
             "Authorization":        f"Bearer {self._token}",
             "Accept":               "application/vnd.github.v3+json",
@@ -121,68 +130,136 @@ class GitHubService(BasePlatformService):
             except GithubException:
                 pass
 
-        hdrs = self._rest_headers()
+        hdrs = self._hdrs()
         base = f"https://api.github.com/repos/{namespace_id}/{name}"
 
-        # ── Contents API upload ───────────────────────────────────────────────
-        # Only README.md exists (from auto_init) — needs its SHA to update.
-        # All other files are new — direct PUT, no pre-check.
+        # ── Phase 1: Contents API for non-workflow files ──────────────────────
+        # Splits files into regular (upload now) and workflow (needs git/trees).
+        workflow_files = {p: c for p, c in files.items()
+                         if p.startswith(".github/workflows/")}
+        regular_files  = {p: c for p, c in files.items()
+                         if not p.startswith(".github/workflows/")}
+
+        # README.md already exists from auto_init — need its SHA to update it.
         readme_sha = None
         r = httpx.get(f"{base}/contents/README.md", headers=hdrs,
                       params={"ref": work_branch}, timeout=10)
         if r.status_code == 200:
             readme_sha = r.json().get("sha")
 
-        skipped = []
-        uploaded = 0
-
-        for path, content in sorted(files.items()):
+        for path, content in sorted(regular_files.items()):
             encoded = base64.b64encode(
                 content.encode("utf-8") if isinstance(content, str) else content
             ).decode("utf-8")
-
             payload: dict = {
                 "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                "content": encoded,
-                "branch":  work_branch,
+                "content": encoded, "branch": work_branch,
             }
             if path == "README.md" and readme_sha:
                 payload["sha"] = readme_sha
 
             resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
                              json=payload, timeout=30)
-
-            # Handle unexpected existing file
             if resp.status_code == 422:
-                existing = httpx.get(f"{base}/contents/{path}", headers=hdrs,
-                                     params={"ref": work_branch}, timeout=10)
-                if existing.status_code == 200:
-                    payload["sha"] = existing.json()["sha"]
+                ex = httpx.get(f"{base}/contents/{path}", headers=hdrs,
+                               params={"ref": work_branch}, timeout=10)
+                if ex.status_code == 200:
+                    payload["sha"] = ex.json()["sha"]
                     resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
                                      json=payload, timeout=30)
-
-            # .github/workflows/ requires 'workflow' scope on the Contents API
-            if resp.status_code in (403, 404) and ".github/workflows/" in path:
-                skipped.append(path)
-                logger.warning(
-                    "GitHub: skipped '%s' — add 'workflow' scope to your token "
-                    "(github.com/settings/tokens) to upload workflow files.",
-                    path,
-                )
-                continue
-
             resp.raise_for_status()
-            uploaded += 1
-            logger.debug("GitHub: uploaded '%s'", path)
 
-        if skipped:
-            logger.info(
-                "GitHub: uploaded %d/%d files (%d workflow file(s) skipped — "
-                "need 'workflow' token scope): %s",
-                uploaded, len(files), len(skipped), skipped,
-            )
-        else:
-            logger.info("GitHub: uploaded all %d files to '%s'", uploaded, work_branch)
+        logger.info("GitHub: Phase 1 complete — %d files staged", len(regular_files))
+
+        # ── Phase 2a: Get current tree SHA ────────────────────────────────────
+        latest_sha = g.get_repo(f"{namespace_id}/{name}").get_branch(work_branch).commit.sha
+        commit_info = httpx.get(f"{base}/git/commits/{latest_sha}", headers=hdrs, timeout=15)
+        commit_info.raise_for_status()
+        latest_tree_sha = commit_info.json()["tree"]["sha"]
+
+        # ── Phase 2b: Add workflow files via git/trees (if needed) ───────────
+        # POST /git/trees has a ~2-minute init delay on fresh repos.
+        # Retry for up to 90s to stay within the frontend's 180s timeout.
+        final_tree_sha = latest_tree_sha
+
+        if workflow_files:
+            wf_items = [
+                {"path": p, "mode": "100644", "type": "blob",
+                 "content": c if isinstance(c, str) else c.decode("utf-8")}
+                for p, c in workflow_files.items()
+            ]
+            tree_added = False
+            for wait_s in [10, 15, 20, 25, 30]:
+                time.sleep(wait_s)
+                wf_tree = httpx.post(
+                    f"{base}/git/trees", headers=hdrs,
+                    json={"base_tree": latest_tree_sha, "tree": wf_items},
+                    timeout=30,
+                )
+                if wf_tree.is_success:
+                    final_tree_sha = wf_tree.json()["sha"]
+                    tree_added = True
+                    logger.info("GitHub: workflow file(s) added via git/trees")
+                    break
+                logger.info(
+                    "GitHub: git/trees not ready yet (waited %ds) — retrying…", wait_s
+                )
+
+            if not tree_added:
+                logger.warning(
+                    "GitHub: git/trees not ready within 90s — adding workflow files "
+                    "via Contents API instead (needs 'workflow' token scope)."
+                )
+                for path, content in workflow_files.items():
+                    encoded = base64.b64encode(
+                        content.encode("utf-8") if isinstance(content, str) else content
+                    ).decode("utf-8")
+                    resp = httpx.put(
+                        f"{base}/contents/{path}", headers=hdrs,
+                        json={"message": "feat: add CI workflow", "content": encoded,
+                              "branch": work_branch},
+                        timeout=30,
+                    )
+                    if resp.status_code in (403, 404):
+                        logger.warning(
+                            "GitHub: skipped '%s' — add 'workflow' scope to your token",
+                            path,
+                        )
+                    else:
+                        resp.raise_for_status()
+
+                # Re-fetch tree SHA (after possible Contents API workflow upload)
+                latest_sha2 = g.get_repo(f"{namespace_id}/{name}").get_branch(work_branch).commit.sha
+                c2 = httpx.get(f"{base}/git/commits/{latest_sha2}", headers=hdrs, timeout=15)
+                if c2.is_success:
+                    final_tree_sha = c2.json()["tree"]["sha"]
+
+        # ── Phase 2c: Squash into a single orphan commit ──────────────────────
+        # POST /git/commits works immediately — no 2-minute delay.
+        # Orphan commit (parents=[]) gives a single clean history.
+        squash = httpx.post(
+            f"{base}/git/commits", headers=hdrs,
+            json={
+                "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                "tree":    final_tree_sha,
+                "parents": [],
+            },
+            timeout=30,
+        )
+        squash.raise_for_status()
+        final_sha = squash.json()["sha"]
+
+        ref_patch = httpx.patch(
+            f"{base}/git/refs/heads/{work_branch}", headers=hdrs,
+            json={"sha": final_sha, "force": True},
+            timeout=15,
+        )
+        ref_patch.raise_for_status()
+
+        logger.info(
+            "GitHub: squashed into 1 clean commit on '%s' (%d files)",
+            work_branch, len(files),
+        )
 
         return {
             "project_id":     str(repo.id),
@@ -224,22 +301,14 @@ class GitHubService(BasePlatformService):
         g    = self._client()
         user = g.get_user()
         result = [
-            {
-                "id":        user.login,
-                "name":      user.login,
-                "full_path": user.login,
-                "kind":      "user",
-            }
+            {"id": user.login, "name": user.login,
+             "full_path": user.login, "kind": "user"},
         ]
         for org in user.get_orgs():
             display = org.name or org.login
             if not search or search.lower() in org.login.lower() or search.lower() in display.lower():
-                result.append(
-                    {
-                        "id":        org.login,
-                        "name":      display,
-                        "full_path": org.login,
-                        "kind":      "organization",
-                    }
-                )
+                result.append({
+                    "id": org.login, "name": display,
+                    "full_path": org.login, "kind": "organization",
+                })
         return sorted(result, key=lambda n: n["full_path"])
