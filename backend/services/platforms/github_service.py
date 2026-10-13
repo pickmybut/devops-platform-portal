@@ -1,24 +1,25 @@
 """
 GitHub platform service.
 
-File upload: single commit via the Git Data API using content= mode.
+File upload: GitHub Contents API (PUT /repos/{owner}/{repo}/contents/{path}).
+  - Works immediately on freshly-created repos, no timing issues.
+  - Creates one commit per file (N commits for N files).
+  - All files including .github/workflows/ — the Contents API allows workflow
+    files when the token has 'workflow' scope. Without it, those files are
+    skipped with a clear warning.
 
-  InputGitTreeElement(path, mode, type, content=...)
-  — tells GitHub to create each blob atomically inside the tree operation,
-    all on the same server. No separate create_git_blob() calls, no
-    replication race condition, no 'workflow' scope requirement.
-
-  Result: repo + all scaffold files in exactly 2 commits:
-    1. GitHub auto-init commit (README)
-    2. "feat: initial scaffold" (all our files)
+Note on git/trees (single-commit approach):
+  GitHub's low-level Git Data API (/git/trees) returns 404 for ~2 minutes
+  after repo creation while the git backend initialises. The Contents API
+  uses a higher-level layer that bypasses this delay.
 
 Post-creation:
   - Branch protection (non-fatal — requires GitHub Pro for private repos).
 """
 
+import base64
 import logging
 import os
-import time
 from typing import Dict, List
 
 import httpx
@@ -42,6 +43,13 @@ class GitHubService(BasePlatformService):
                 "https://github.com/settings/tokens/new?scopes=repo"
             )
         return Github(self._token)
+
+    def _rest_headers(self) -> dict:
+        return {
+            "Authorization":        f"Bearer {self._token}",
+            "Accept":               "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
 
     # ── Repository creation ───────────────────────────────────────────────────
 
@@ -92,7 +100,6 @@ class GitHubService(BasePlatformService):
                 ) from exc
             raise
 
-        # Re-fetch for a clean, fully-authenticated object
         repo = g.get_repo(repo.full_name)
         logger.info("GitHub: repo created — %s", repo.html_url)
 
@@ -114,81 +121,68 @@ class GitHubService(BasePlatformService):
             except GithubException:
                 pass
 
-        # ── Upload all files via direct REST calls (httpx) ────────────────────
-        # GitHub's Git Data API (/git/trees) takes 1-2 minutes to initialise
-        # after repo creation — unless you "wake it up" by creating a blob first.
-        # Creating one primer blob forces the git DB to initialise in ~2-3 seconds.
-
-        api_headers = {
-            "Authorization":        f"Bearer {self._token}",
-            "Accept":               "application/vnd.github.v3+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+        hdrs = self._rest_headers()
         base = f"https://api.github.com/repos/{namespace_id}/{name}"
 
-        # ── Primer blob: forces git DB initialisation ─────────────────────────
-        primer_path, primer_content = next(iter(files.items()))
-        try:
-            repo.create_git_blob(
-                primer_content if isinstance(primer_content, str)
-                else primer_content.decode("utf-8"),
-                "utf-8",
-            )
-            logger.info("GitHub: git DB initialised (primer blob created)")
-            time.sleep(5)   # 5s gives the git tree server time to mount
-        except GithubException as exc:
-            logger.warning("GitHub: primer blob failed (%s) — waiting 8s", exc)
-            time.sleep(8)
+        # ── Contents API upload ───────────────────────────────────────────────
+        # Only README.md exists (from auto_init) — needs its SHA to update.
+        # All other files are new — direct PUT, no pre-check.
+        readme_sha = None
+        r = httpx.get(f"{base}/contents/README.md", headers=hdrs,
+                      params={"ref": work_branch}, timeout=10)
+        if r.status_code == 200:
+            readme_sha = r.json().get("sha")
 
-        # ── Tree + commit + ref (3 API calls for all files) ───────────────────
-        tree_payload = {
-            "tree": [
-                {
-                    "path":    path,
-                    "mode":    "100644",
-                    "type":    "blob",
-                    "content": content if isinstance(content, str)
-                               else content.decode("utf-8"),
-                }
-                for path, content in files.items()
-            ]
-        }
+        skipped = []
+        uploaded = 0
 
-        for attempt in range(6):   # up to 6 × 5s = 30s extra
-            tree_resp = httpx.post(
-                f"{base}/git/trees", headers=api_headers,
-                json=tree_payload, timeout=120,
-            )
-            if tree_resp.is_success:
-                break
-            if tree_resp.status_code == 404 and attempt < 5:
-                logger.warning("GitHub: git/trees not ready yet (attempt %d/6) — waiting 5s", attempt + 1)
-                time.sleep(5)
-            else:
-                tree_resp.raise_for_status()
-        tree_resp.raise_for_status()
-        tree_sha = tree_resp.json()["sha"]
+        for path, content in sorted(files.items()):
+            encoded = base64.b64encode(
+                content.encode("utf-8") if isinstance(content, str) else content
+            ).decode("utf-8")
 
-        commit_resp = httpx.post(
-            f"{base}/git/commits", headers=api_headers,
-            json={
+            payload: dict = {
                 "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                "tree":    tree_sha,
-                "parents": [],
-            },
-            timeout=30,
-        )
-        commit_resp.raise_for_status()
-        commit_sha = commit_resp.json()["sha"]
+                "content": encoded,
+                "branch":  work_branch,
+            }
+            if path == "README.md" and readme_sha:
+                payload["sha"] = readme_sha
 
-        ref_resp = httpx.patch(
-            f"{base}/git/refs/heads/{work_branch}", headers=api_headers,
-            json={"sha": commit_sha, "force": True},
-            timeout=15,
-        )
-        ref_resp.raise_for_status()
+            resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
+                             json=payload, timeout=30)
 
-        logger.info("GitHub: pushed %d files to '%s' (1 commit)", len(files), work_branch)
+            # Handle unexpected existing file
+            if resp.status_code == 422:
+                existing = httpx.get(f"{base}/contents/{path}", headers=hdrs,
+                                     params={"ref": work_branch}, timeout=10)
+                if existing.status_code == 200:
+                    payload["sha"] = existing.json()["sha"]
+                    resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
+                                     json=payload, timeout=30)
+
+            # .github/workflows/ requires 'workflow' scope on the Contents API
+            if resp.status_code in (403, 404) and ".github/workflows/" in path:
+                skipped.append(path)
+                logger.warning(
+                    "GitHub: skipped '%s' — add 'workflow' scope to your token "
+                    "(github.com/settings/tokens) to upload workflow files.",
+                    path,
+                )
+                continue
+
+            resp.raise_for_status()
+            uploaded += 1
+            logger.debug("GitHub: uploaded '%s'", path)
+
+        if skipped:
+            logger.info(
+                "GitHub: uploaded %d/%d files (%d workflow file(s) skipped — "
+                "need 'workflow' token scope): %s",
+                uploaded, len(files), len(skipped), skipped,
+            )
+        else:
+            logger.info("GitHub: uploaded all %d files to '%s'", uploaded, work_branch)
 
         return {
             "project_id":     str(repo.id),
