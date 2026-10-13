@@ -1,28 +1,22 @@
 """
 GitHub platform service.
 
-File upload — two-phase approach for a single clean commit:
+File upload — single commit via git/trees + git/commits:
 
-  Phase 1: Contents API for all non-workflow files.
-    Works immediately on fresh repos, no timing issues.
-    N files → N commits (temporary staging commits).
+  1. Create repo (auto_init=True).
+  2. Wait for GitHub's git backend to initialise (typically 10-45 seconds
+     after creation; we retry every 15 s up to 90 s total).
+  3. POST /git/trees with ALL files in content= mode — GitHub creates every
+     blob atomically on a single server, no replication race.
+  4. POST /git/commits (parents=[]) — orphan commit, no history baggage.
+  5. PATCH /git/refs force-update — branch points to the single clean commit.
 
-  Phase 2: Squash into one orphan commit.
-    a. POST /git/commits with latest tree SHA, parents=[] → instant!
-       (POST /git/commits has no init delay unlike POST /git/trees)
-    b. PATCH /git/refs force-update → branch points to single clean commit.
-
-  Workflow files (.github/workflows/):
-    Need POST /git/trees (base_tree + new file), which has a ~2-minute
-    init delay on fresh repos. We retry for up to 90 s after Phase 1.
-    If git/trees becomes available: add workflow files into the squash tree.
-    If it times out: fall back to Contents API for workflow files (skips
-    if token lacks 'workflow' scope, adds a separate commit otherwise).
-
-Result: repo with 1 commit containing all scaffold files.
+Fallback (if git/trees still 404 after 90 s of retries):
+  Contents API for all files + orphan-squash in one extra step.
+  Still results in a single commit on the branch.
 
 Post-creation:
-  - Branch protection (non-fatal — requires GitHub Pro for private repos).
+  - Branch protection (non-fatal — needs GitHub Pro for private repos).
 """
 
 import base64
@@ -105,7 +99,7 @@ class GitHubService(BasePlatformService):
             if exc.status == 403 and "secondary rate limit" in str(exc.data).lower():
                 raise ValueError(
                     "GitHub secondary rate limit — too many repos created recently. "
-                    "Wait 5–10 minutes and try again. This only happens during rapid testing."
+                    "Wait 5–10 minutes and try again."
                 ) from exc
             raise
 
@@ -133,133 +127,132 @@ class GitHubService(BasePlatformService):
         hdrs = self._hdrs()
         base = f"https://api.github.com/repos/{namespace_id}/{name}"
 
-        # ── Phase 1: Contents API for non-workflow files ──────────────────────
-        # Splits files into regular (upload now) and workflow (needs git/trees).
-        workflow_files = {p: c for p, c in files.items()
-                         if p.startswith(".github/workflows/")}
-        regular_files  = {p: c for p, c in files.items()
-                         if not p.startswith(".github/workflows/")}
-
-        # README.md already exists from auto_init — need its SHA to update it.
-        readme_sha = None
-        r = httpx.get(f"{base}/contents/README.md", headers=hdrs,
-                      params={"ref": work_branch}, timeout=10)
-        if r.status_code == 200:
-            readme_sha = r.json().get("sha")
-
-        for path, content in sorted(regular_files.items()):
-            encoded = base64.b64encode(
-                content.encode("utf-8") if isinstance(content, str) else content
-            ).decode("utf-8")
-            payload: dict = {
-                "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                "content": encoded, "branch": work_branch,
-            }
-            if path == "README.md" and readme_sha:
-                payload["sha"] = readme_sha
-
-            resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
-                             json=payload, timeout=30)
-            if resp.status_code == 422:
-                ex = httpx.get(f"{base}/contents/{path}", headers=hdrs,
-                               params={"ref": work_branch}, timeout=10)
-                if ex.status_code == 200:
-                    payload["sha"] = ex.json()["sha"]
-                    resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
-                                     json=payload, timeout=30)
-            resp.raise_for_status()
-
-        logger.info("GitHub: Phase 1 complete — %d files staged", len(regular_files))
-
-        # ── Phase 2a: Get current tree SHA ────────────────────────────────────
-        latest_sha = g.get_repo(f"{namespace_id}/{name}").get_branch(work_branch).commit.sha
-        commit_info = httpx.get(f"{base}/git/commits/{latest_sha}", headers=hdrs, timeout=15)
-        commit_info.raise_for_status()
-        latest_tree_sha = commit_info.json()["tree"]["sha"]
-
-        # ── Phase 2b: Add workflow files via git/trees (if needed) ───────────
-        # POST /git/trees has a ~2-minute init delay on fresh repos.
-        # Retry for up to 90s to stay within the frontend's 180s timeout.
-        final_tree_sha = latest_tree_sha
-
-        if workflow_files:
-            wf_items = [
-                {"path": p, "mode": "100644", "type": "blob",
-                 "content": c if isinstance(c, str) else c.decode("utf-8")}
-                for p, c in workflow_files.items()
+        tree_payload = {
+            "tree": [
+                {
+                    "path":    path,
+                    "mode":    "100644",
+                    "type":    "blob",
+                    "content": content if isinstance(content, str)
+                               else content.decode("utf-8"),
+                }
+                for path, content in files.items()
             ]
-            tree_added = False
-            for wait_s in [10, 15, 20, 25, 30]:
-                time.sleep(wait_s)
-                wf_tree = httpx.post(
-                    f"{base}/git/trees", headers=hdrs,
-                    json={"base_tree": latest_tree_sha, "tree": wf_items},
-                    timeout=30,
-                )
-                if wf_tree.is_success:
-                    final_tree_sha = wf_tree.json()["sha"]
-                    tree_added = True
-                    logger.info("GitHub: workflow file(s) added via git/trees")
-                    break
+        }
+
+        # ── Primary: git/trees + orphan commit (single clean commit) ─────────
+        # GitHub's git backend initialises ~10-45 s after repo creation.
+        # Retry every 15 s up to 90 s. No per-file uploads — everything in
+        # one atomic tree operation.
+        tree_sha = None
+        for wait_s in [15, 15, 15, 15, 30]:
+            time.sleep(wait_s)
+            tree_resp = httpx.post(
+                f"{base}/git/trees", headers=hdrs,
+                json=tree_payload, timeout=120,
+            )
+            if tree_resp.is_success:
+                tree_sha = tree_resp.json()["sha"]
                 logger.info(
-                    "GitHub: git/trees not ready yet (waited %ds) — retrying…", wait_s
+                    "GitHub: git/trees ready after %ds — creating commit",
+                    wait_s,
                 )
+                break
+            logger.info(
+                "GitHub: git backend not ready yet (HTTP %d, waited %ds) — retrying…",
+                tree_resp.status_code, wait_s,
+            )
 
-            if not tree_added:
-                logger.warning(
-                    "GitHub: git/trees not ready within 90s — adding workflow files "
-                    "via Contents API instead (needs 'workflow' token scope)."
-                )
-                for path, content in workflow_files.items():
-                    encoded = base64.b64encode(
-                        content.encode("utf-8") if isinstance(content, str) else content
-                    ).decode("utf-8")
-                    resp = httpx.put(
-                        f"{base}/contents/{path}", headers=hdrs,
-                        json={"message": "feat: add CI workflow", "content": encoded,
-                              "branch": work_branch},
-                        timeout=30,
-                    )
-                    if resp.status_code in (403, 404):
-                        logger.warning(
-                            "GitHub: skipped '%s' — add 'workflow' scope to your token",
-                            path,
-                        )
-                    else:
-                        resp.raise_for_status()
+        if tree_sha:
+            commit_resp = httpx.post(
+                f"{base}/git/commits", headers=hdrs,
+                json={
+                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                    "tree":    tree_sha,
+                    "parents": [],
+                },
+                timeout=30,
+            )
+            commit_resp.raise_for_status()
+            orphan_sha = commit_resp.json()["sha"]
 
-                # Re-fetch tree SHA (after possible Contents API workflow upload)
-                latest_sha2 = g.get_repo(f"{namespace_id}/{name}").get_branch(work_branch).commit.sha
-                c2 = httpx.get(f"{base}/git/commits/{latest_sha2}", headers=hdrs, timeout=15)
-                if c2.is_success:
-                    final_tree_sha = c2.json()["tree"]["sha"]
+            httpx.patch(
+                f"{base}/git/refs/heads/{work_branch}", headers=hdrs,
+                json={"sha": orphan_sha, "force": True},
+                timeout=15,
+            ).raise_for_status()
 
-        # ── Phase 2c: Squash into a single orphan commit ──────────────────────
-        # POST /git/commits works immediately — no 2-minute delay.
-        # Orphan commit (parents=[]) gives a single clean history.
-        squash = httpx.post(
-            f"{base}/git/commits", headers=hdrs,
-            json={
-                "message": "feat: initial scaffold from DevOps Self-Service Portal",
-                "tree":    final_tree_sha,
-                "parents": [],
-            },
-            timeout=30,
-        )
-        squash.raise_for_status()
-        final_sha = squash.json()["sha"]
+            logger.info(
+                "GitHub: pushed %d files to '%s' in 1 commit",
+                len(files), work_branch,
+            )
 
-        ref_patch = httpx.patch(
-            f"{base}/git/refs/heads/{work_branch}", headers=hdrs,
-            json={"sha": final_sha, "force": True},
-            timeout=15,
-        )
-        ref_patch.raise_for_status()
+        else:
+            # ── Fallback: Contents API + squash ───────────────────────────────
+            # git/trees unavailable after 90 s (heavy rate limiting).
+            # Upload via Contents API then squash to a single orphan commit.
+            logger.warning(
+                "GitHub: git/trees still not ready after 90s — "
+                "falling back to Contents API + squash"
+            )
+            readme_sha = None
+            r = httpx.get(f"{base}/contents/README.md", headers=hdrs,
+                          params={"ref": work_branch}, timeout=10)
+            if r.status_code == 200:
+                readme_sha = r.json().get("sha")
 
-        logger.info(
-            "GitHub: squashed into 1 clean commit on '%s' (%d files)",
-            work_branch, len(files),
-        )
+            for path, content in sorted(files.items()):
+                encoded = base64.b64encode(
+                    content.encode("utf-8") if isinstance(content, str) else content
+                ).decode("utf-8")
+                payload: dict = {
+                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                    "content": encoded, "branch": work_branch,
+                }
+                if path == "README.md" and readme_sha:
+                    payload["sha"] = readme_sha
+
+                resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
+                                 json=payload, timeout=30)
+                if resp.status_code == 422:
+                    ex = httpx.get(f"{base}/contents/{path}", headers=hdrs,
+                                   params={"ref": work_branch}, timeout=10)
+                    if ex.status_code == 200:
+                        payload["sha"] = ex.json()["sha"]
+                        resp = httpx.put(f"{base}/contents/{path}", headers=hdrs,
+                                         json=payload, timeout=30)
+
+                if resp.status_code in (403, 404) and ".github/workflows/" in path:
+                    logger.warning("GitHub: skipped '%s' (needs 'workflow' scope)", path)
+                    continue
+                resp.raise_for_status()
+
+            # Squash N staging commits into one orphan commit
+            latest_sha = g.get_repo(f"{namespace_id}/{name}").get_branch(work_branch).commit.sha
+            c_info = httpx.get(f"{base}/git/commits/{latest_sha}", headers=hdrs, timeout=15)
+            c_info.raise_for_status()
+
+            squash = httpx.post(
+                f"{base}/git/commits", headers=hdrs,
+                json={
+                    "message": "feat: initial scaffold from DevOps Self-Service Portal",
+                    "tree":    c_info.json()["tree"]["sha"],
+                    "parents": [],
+                },
+                timeout=30,
+            )
+            squash.raise_for_status()
+
+            httpx.patch(
+                f"{base}/git/refs/heads/{work_branch}", headers=hdrs,
+                json={"sha": squash.json()["sha"], "force": True},
+                timeout=15,
+            ).raise_for_status()
+
+            logger.info(
+                "GitHub: fallback complete — %d files in 1 squashed commit",
+                len(files),
+            )
 
         return {
             "project_id":     str(repo.id),
